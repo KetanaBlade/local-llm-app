@@ -218,6 +218,7 @@ async def run_agent_stream(
     mode: str,
     hw_profile: Dict[str, Any],
     offline_mode: bool = True,
+    chat_context: str = "",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     await ensure_ollama_running()
     tuning = hw_profile.get("tuning", {})
@@ -227,6 +228,12 @@ async def run_agent_stream(
     allow_web_search = not offline_mode
 
     sys_prompt = SYSTEM_PROMPT_AGENT if mode == "agent" else SYSTEM_PROMPT_CHAT
+    if chat_context and chat_context.strip():
+        sys_prompt += (
+            "\n\n=== USER BACKGROUND CONTEXT & INSTRUCTIONS FOR THIS CONVERSATION ===\n"
+            f"{chat_context.strip()}\n"
+            "===================================================================="
+        )
     ollama_messages = [{"role": "system", "content": sys_prompt}]
     # Full conversation history is passed regardless of which model generated earlier turns
     for m in history_messages[-16:]:

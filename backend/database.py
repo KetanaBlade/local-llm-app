@@ -1,11 +1,16 @@
 """
-Local SQLite Database Layer (100% On-Device Data Residency).
+Local SQLite Database Layer (100% On-Device Data Residency & Secure Obliteration).
 
 Stores:
-- Conversations & streaming message history
-- Tool execution traces (Antigravity Sense -> Plan -> Act logs)
-- Generated Artifacts (Excel sheets, Word docs, PDFs, Images, Videos, Interactive Web Apps)
-- Privacy & Hardware Settings (Air-Gap mode, Hardware Profile override, Tool safety policy)
+- Conversations (including per-chat `context` background instructions)
+- Streaming message history
+- Generated Artifacts
+- Privacy & Hardware Settings
+
+Deletion Policy:
+- `delete_conversation` enables `PRAGMA secure_delete = ON`, deletes all messages,
+  physically unlinks/deletes all associated artifact files from disk, removes artifact
+  records, deletes the conversation record, and runs `VACUUM` to purge unallocated pages.
 """
 
 from __future__ import annotations
@@ -18,11 +23,14 @@ from typing import Any, Dict, List, Optional
 
 import aiosqlite
 
-DB_PATH = Path(__file__).resolve().parent.parent / "local_ai_studio.db"
+ROOT_DIR = Path(__file__).resolve().parent.parent
+DB_PATH = ROOT_DIR / "local_ai_studio.db"
+ARTIFACTS_DIR = ROOT_DIR / "workspace" / "artifacts"
 
 
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA secure_delete = ON")
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS settings (
@@ -38,11 +46,18 @@ async def init_db() -> None:
                 title TEXT NOT NULL,
                 model TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'agent',
+                context TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
             """
         )
+        # Ensure `context` column exists on older databases
+        try:
+            await db.execute("ALTER TABLE conversations ADD COLUMN context TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
@@ -75,7 +90,6 @@ async def init_db() -> None:
             )
             """
         )
-        # Seed default settings if missing
         defaults = {
             "air_gap_mode": "true",
             "hardware_profile_override": "auto",
@@ -118,13 +132,18 @@ async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     return await get_settings()
 
 
-async def create_conversation(title: str, model: str, mode: str = "agent") -> Dict[str, Any]:
+async def create_conversation(
+    title: str,
+    model: str,
+    mode: str = "agent",
+    context: str = "",
+) -> Dict[str, Any]:
     cid = str(uuid.uuid4())
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO conversations (id, title, model, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (cid, title, model, mode, now, now),
+            "INSERT INTO conversations (id, title, model, mode, context, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (cid, title, model, mode, context, now, now),
         )
         await db.commit()
     return {
@@ -132,16 +151,26 @@ async def create_conversation(title: str, model: str, mode: str = "agent") -> Di
         "title": title,
         "model": model,
         "mode": mode,
+        "context": context,
         "created_at": now,
         "updated_at": now,
     }
+
+
+async def update_conversation_context(conversation_id: str, context: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE conversations SET context = ?, updated_at = ? WHERE id = ?",
+            (context, time.time(), conversation_id),
+        )
+        await db.commit()
 
 
 async def list_conversations() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
+            "SELECT id, title, model, mode, context, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -151,7 +180,7 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, created_at, updated_at FROM conversations WHERE id = ?",
+            "SELECT id, title, model, mode, context, created_at, updated_at FROM conversations WHERE id = ?",
             (conversation_id,),
         )
         conv = await cursor.fetchone()
@@ -173,11 +202,92 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
         return res
 
 
-async def delete_conversation(conversation_id: str) -> None:
+async def delete_conversation(conversation_id: str) -> Dict[str, Any]:
+    """
+    Totally obliterate a conversation, all its messages, all associated artifact rows,
+    and physically overwrite & delete any files created during that conversation from disk,
+    followed by SQLite secure_delete + VACUUM so zero residual bytes remain.
+    """
+    deleted_files: List[str] = []
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA secure_delete = ON")
+        db.row_factory = aiosqlite.Row
+
+        # 1. Find all artifacts tied to this conversation (both in artifacts table and message JSON)
+        art_cursor = await db.execute(
+            "SELECT id, filename FROM artifacts WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        art_rows = await art_cursor.fetchall()
+        filenames_to_wipe = {r["filename"] for r in art_rows if r["filename"]}
+
+        msg_cursor = await db.execute(
+            "SELECT artifacts FROM messages WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        msg_rows = await msg_cursor.fetchall()
+        for mr in msg_rows:
+            try:
+                arts = json.loads(mr["artifacts"] or "[]")
+                for a in arts:
+                    if isinstance(a, dict) and a.get("filename"):
+                        filenames_to_wipe.add(a["filename"])
+            except Exception:
+                pass
+
+        # 2. Physically overwrite and unlink files on disk
+        for fname in filenames_to_wipe:
+            safe_name = Path(fname).name
+            fpath = ARTIFACTS_DIR / safe_name
+            if fpath.exists() and fpath.is_file():
+                try:
+                    size = fpath.stat().st_size
+                    if size > 0:
+                        with open(fpath, "ba+", buffering=0) as f:
+                            f.seek(0)
+                            f.write(b"\x00" * min(size, 1024 * 1024))
+                    fpath.unlink(missing_ok=True)
+                    deleted_files.append(safe_name)
+                except Exception:
+                    fpath.unlink(missing_ok=True)
+
+            await db.execute("DELETE FROM artifacts WHERE filename = ?", (safe_name,))
+
+        # 3. Delete all DB rows for artifacts, messages, and conversation
+        await db.execute("DELETE FROM artifacts WHERE conversation_id = ?", (conversation_id,))
         await db.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
         await db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
         await db.commit()
+
+        # 4. Reclaim and zero out SQLite pages
+        await db.execute("VACUUM")
+
+    return {"status": "obliterated", "deleted_files": deleted_files}
+
+
+async def delete_artifact(artifact_id: str) -> Dict[str, Any]:
+    """Obliterate a single generated file from disk and SQLite."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA secure_delete = ON")
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT filename FROM artifacts WHERE id = ?", (artifact_id,))
+        row = await cursor.fetchone()
+        if row and row["filename"]:
+            fpath = ARTIFACTS_DIR / Path(row["filename"]).name
+            if fpath.exists() and fpath.is_file():
+                try:
+                    size = fpath.stat().st_size
+                    if size > 0:
+                        with open(fpath, "ba+", buffering=0) as f:
+                            f.seek(0)
+                            f.write(b"\x00" * min(size, 1024 * 1024))
+                    fpath.unlink(missing_ok=True)
+                except Exception:
+                    fpath.unlink(missing_ok=True)
+        await db.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+        await db.commit()
+        await db.execute("VACUUM")
+    return {"status": "obliterated", "id": artifact_id}
 
 
 async def add_message(

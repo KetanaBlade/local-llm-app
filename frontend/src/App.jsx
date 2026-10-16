@@ -24,6 +24,7 @@ import {
   Eye,
   FolderOpen,
   Sparkles,
+  BookOpen,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -36,6 +37,10 @@ export default function App() {
   const [conversations, setConversations] = useState([])
   const [activeConvId, setActiveConvId] = useState(null)
   const [messages, setMessages] = useState([])
+  const [chatContext, setChatContext] = useState('')
+  const [contextExpanded, setContextExpanded] = useState(true)
+  const [contextSavedBadge, setContextSavedBadge] = useState(false)
+
   const [artifacts, setArtifacts] = useState([])
   const [selectedArtifact, setSelectedArtifact] = useState(null)
   const [activeSheetIdx, setActiveSheetIdx] = useState(0)
@@ -46,7 +51,7 @@ export default function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamStatus, setStreamStatus] = useState('')
 
-  // Panels & Modals (File Preview Panel stays closed until a file is created or clicked!)
+  // Panels & Modals
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [filePanelOpen, setFilePanelOpen] = useState(false)
   const [hwModalOpen, setHwModalOpen] = useState(false)
@@ -121,6 +126,8 @@ export default function App() {
         const data = await r.json()
         setActiveConvId(data.id)
         setMessages(data.messages || [])
+        setChatContext(data.context || '')
+        setContextExpanded(Boolean(data.context))
       }
     } catch (e) {
       console.error(e)
@@ -130,7 +137,22 @@ export default function App() {
   const startNewChat = () => {
     setActiveConvId(null)
     setMessages([])
+    setChatContext('')
+    setContextExpanded(true)
     setPromptInput('')
+  }
+
+  const handleSaveContextOnActiveChat = async (newCtx) => {
+    setChatContext(newCtx)
+    if (activeConvId) {
+      await fetch(`/api/conversations/${activeConvId}/context`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ context: newCtx }),
+      })
+      setContextSavedBadge(true)
+      setTimeout(() => setContextSavedBadge(false), 1800)
+    }
   }
 
   const handleDeleteConversation = async (e, convId) => {
@@ -139,7 +161,17 @@ export default function App() {
     if (activeConvId === convId) {
       startNewChat()
     }
-    fetchConversations()
+    await fetchConversations()
+    await fetchArtifacts()
+  }
+
+  const handleDeleteArtifact = async (e, artId) => {
+    e.stopPropagation()
+    await fetch(`/api/artifacts/${artId}`, { method: 'DELETE' })
+    if (selectedArtifact?.id === artId) {
+      setSelectedArtifact(null)
+    }
+    await fetchArtifacts()
   }
 
   const handleUpdateSetting = async (updates) => {
@@ -193,15 +225,6 @@ export default function App() {
     }
   }
 
-  const handleUnloadModel = async (modelId) => {
-    await fetch('/api/models/unload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modelId }),
-    })
-    await fetchSystemStatus()
-  }
-
   const handleSendPrompt = async (overrideText) => {
     const text = (overrideText ?? promptInput).trim()
     if (!text || isStreaming) return
@@ -240,6 +263,7 @@ export default function App() {
           prompt: text,
           model: selectedModel,
           mode: 'agent',
+          context: chatContext,
         }),
       })
 
@@ -338,15 +362,13 @@ export default function App() {
   const hw = systemStatus?.hardware
   const settings = systemStatus?.settings
   const installedModels = systemStatus?.installed_models || []
-  const runningModels = systemStatus?.running_models || []
   const network = systemStatus?.network
   const isOfflineOnly = settings?.air_gap_mode !== false
 
   return (
     <div className="flex flex-col h-screen w-screen bg-[#0A0B0E] text-[#F3F4F6] select-none overflow-hidden">
-      {/* SIMPLIFIED, CLEAN TOP HEADER BAR */}
+      {/* SIMPLIFIED TOP HEADER BAR */}
       <header className="h-14 shrink-0 border-b border-white/[0.075] bg-[#0D0F14] px-3 lg:px-5 flex items-center justify-between gap-3 z-30">
-        {/* Left: Sidebar Toggle & Brand */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => setLeftSidebarOpen((v) => !v)}
@@ -367,9 +389,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Hardware Info, Phone Wi-Fi Link & Created Files Drawer */}
         <div className="flex items-center gap-2">
-          {/* Hardware Status Button */}
           <button
             onClick={() => setHwModalOpen(true)}
             className="h-9 px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-2 text-xs transition"
@@ -381,7 +401,6 @@ export default function App() {
             </span>
           </button>
 
-          {/* Phone Wi-Fi Connect Button */}
           <button
             onClick={() => setMobileModalOpen(true)}
             className="h-9 px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition"
@@ -391,7 +410,6 @@ export default function App() {
             <span className="hidden md:inline font-medium">Use on Phone</span>
           </button>
 
-          {/* Created Files Drawer Button (Only highlights when files exist) */}
           <button
             onClick={() => {
               if (!selectedArtifact && artifacts.length > 0) {
@@ -419,7 +437,7 @@ export default function App() {
 
       {/* MAIN WORKSPACE */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
-        {/* LEFT SIDEBAR: PURELY YOUR CHATS */}
+        {/* LEFT SIDEBAR: YOUR CHATS */}
         {leftSidebarOpen && (
           <aside className="w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-20 select-none">
             <div className="p-3 space-y-4 overflow-y-auto flex-1">
@@ -443,7 +461,8 @@ export default function App() {
 
                 {conversations.length === 0 ? (
                   <div className="px-3 py-5 text-xs text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed">
-                    Your chat history is saved privately on your computer.
+                    Your chat history is saved privately on your computer. Deleting a chat
+                    permanently wipes it and its files from disk.
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -460,7 +479,8 @@ export default function App() {
                         <span className="truncate">{c.title}</span>
                         <button
                           onClick={(e) => handleDeleteConversation(e, c.id)}
-                          aria-label="Delete chat"
+                          aria-label="Permanently obliterate chat"
+                          title="Permanently obliterate chat & its files from database and disk"
                           className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 p-1 transition"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -472,7 +492,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Simple Bottom Hardware Status Bar */}
             {hw && (
               <div
                 onClick={() => setHwModalOpen(true)}
@@ -490,113 +509,161 @@ export default function App() {
           </aside>
         )}
 
-        {/* CENTER STAGE: CHAT & UNIFIED INPUT BOX */}
+        {/* CENTER STAGE: BACKGROUND CONTEXT + CHAT STREAM + COMPOSER */}
         <main className="flex-1 flex flex-col min-w-0 bg-[#0A0B0E] select-text">
           <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-10 py-6">
-            {messages.length === 0 ? (
-              <div className="max-w-2xl mx-auto py-8 sm:py-12 space-y-8">
-                <div className="space-y-3">
-                  <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.08] text-xs text-slate-300">
-                    <span className="h-2 w-2 rounded-full bg-[#10B981]" />
-                    <span>Running privately on your {hw?.gpu?.name || 'computer'}</span>
+            <div className="max-w-3xl mx-auto space-y-6">
+              {/* BACKGROUND CONTEXT BOX AT THE START OF EVERY CHAT */}
+              <div className="rounded-xl bg-[#10131B] border border-white/[0.08] overflow-hidden">
+                <div
+                  onClick={() => setContextExpanded((v) => !v)}
+                  className="px-4 py-2.5 flex items-center justify-between cursor-pointer hover:bg-white/[0.02] transition"
+                >
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 text-[#D97757]" />
+                    <span className="text-xs font-semibold text-slate-200">
+                      Background Context & Instructions for This Chat
+                    </span>
+                    {chatContext.trim() && (
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                        Active ({chatContext.trim().length} chars)
+                      </span>
+                    )}
+                    {contextSavedBadge && (
+                      <span className="text-[10px] font-mono text-[#10B981]">
+                        ✓ Saved
+                      </span>
+                    )}
                   </div>
-                  <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-                    Ask a question or ask me to create a file.
-                  </h1>
-                  <p className="text-sm text-slate-400 leading-relaxed">
-                    Chat normally like Gemini, switch between local AI models anytime in the
-                    box below, or ask me to create real{' '}
-                    <strong className="text-slate-200">Excel spreadsheets (.xlsx)</strong>,{' '}
-                    <strong className="text-slate-200">PDF / Word documents</strong>,{' '}
-                    <strong className="text-slate-200">charts & pictures</strong>, or{' '}
-                    <strong className="text-slate-200">interactive mini-apps</strong>.
-                  </p>
+                  <div className="flex items-center gap-1.5 text-xs text-slate-400">
+                    <span>{contextExpanded ? 'Hide' : 'Edit'}</span>
+                    {contextExpanded ? (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5" />
+                    )}
+                  </div>
                 </div>
 
-                {/* 4 Clear Example Prompts */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {[
-                    {
-                      title: 'Make a Custom Excel Spreadsheet',
-                      subtitle: 'Creates a real .xlsx file with =SUM() formulas',
-                      icon: FileSpreadsheet,
-                      prompt:
-                        'Create an Excel spreadsheet for a 2026 Monthly Budget with columns for Category, Q1, Q2, Q3, Q4, and Annual Total using =SUM formulas.',
-                    },
-                    {
-                      title: 'Create a PDF or Word Document',
-                      subtitle: 'Writes and formats a downloadable report',
-                      icon: FileText,
-                      prompt:
-                        'Create a PDF document titled "Home Office & Local AI Setup Guide" with 3 structured sections and bullet points.',
-                    },
-                    {
-                      title: 'Build an Interactive Mini-App',
-                      subtitle: 'Writes a working calculator or tool you can use right here',
-                      icon: Code2,
-                      prompt:
-                        'Build an interactive Loan & Monthly Payment Calculator web app with sliders for loan amount, interest rate, and term.',
-                    },
-                    {
-                      title: 'Create a Chart or Visual Graphic',
-                      subtitle: 'Generates a high-resolution chart or animation',
-                      icon: ImageIcon,
-                      prompt:
-                        'Generate a bar chart comparing monthly expenses: Housing $1800, Food $650, Utilities $240, Savings $900.',
-                    },
-                  ].map((card, i) => {
-                    const Icon = card.icon
-                    return (
-                      <button
-                        key={i}
-                        onClick={() => handleSendPrompt(card.prompt)}
-                        className="text-left p-4 rounded-xl bg-[#10131A] hover:bg-[#151922] border border-white/[0.075] hover:border-[#D97757]/40 transition group flex flex-col justify-between gap-3"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="h-8 w-8 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-[#D97757]">
-                            <Icon className="w-4 h-4" />
-                          </div>
-                          <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-[#D97757] transition" />
-                        </div>
-                        <div>
-                          <div className="text-sm font-medium text-slate-100 group-hover:text-white">
-                            {card.title}
-                          </div>
-                          <div className="text-xs text-slate-400 mt-0.5">
-                            {card.subtitle}
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="max-w-3xl mx-auto space-y-6">
-                {messages.map((msg) => (
-                  <MessageRow
-                    key={msg.id}
-                    msg={msg}
-                    onSelectArtifact={(art) => {
-                      setSelectedArtifact(art)
-                      setActiveSheetIdx(0)
-                      setFilePanelOpen(true)
-                    }}
-                  />
-                ))}
-
-                {streamStatus && (
-                  <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400 py-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
-                    <span>{streamStatus}</span>
+                {contextExpanded && (
+                  <div className="px-4 pb-3.5 pt-1 border-t border-white/[0.06] space-y-2">
+                    <p className="text-xs text-slate-400">
+                      Add any background details, project notes, role instructions, or rules you
+                      want the AI to remember across every message in this chat (even if you
+                      switch models mid-chat).
+                    </p>
+                    <textarea
+                      rows={3}
+                      value={chatContext}
+                      onChange={(e) => handleSaveContextOnActiveChat(e.target.value)}
+                      placeholder="Example: I am building a small business budget for 2026 in USD. Keep explanations concise, format numbers clearly, and include conservative and optimistic scenarios..."
+                      className="w-full rounded-lg bg-[#0B0D12] border border-white/[0.09] focus:border-[#D97757]/60 focus:outline-none p-2.5 text-xs text-slate-100 placeholder-slate-500 resize-y"
+                    />
                   </div>
                 )}
-                <div ref={chatEndRef} />
               </div>
-            )}
+
+              {messages.length === 0 ? (
+                <div className="py-4 space-y-6">
+                  <div className="space-y-2">
+                    <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
+                      Ask a question or ask me to create a file.
+                    </h1>
+                    <p className="text-sm text-slate-400 leading-relaxed">
+                      Chat normally like Gemini, switch between local AI models anytime in the
+                      box below, or ask me to create real{' '}
+                      <strong className="text-slate-200">Excel spreadsheets (.xlsx)</strong>,{' '}
+                      <strong className="text-slate-200">PDF / Word documents</strong>,{' '}
+                      <strong className="text-slate-200">charts & pictures</strong>, or{' '}
+                      <strong className="text-slate-200">interactive mini-apps</strong>.
+                    </p>
+                  </div>
+
+                  {/* 4 Clear Starter Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {[
+                      {
+                        title: 'Make a Custom Excel Spreadsheet',
+                        subtitle: 'Creates a real .xlsx file with =SUM() formulas',
+                        icon: FileSpreadsheet,
+                        prompt:
+                          'Create an Excel spreadsheet for a 2026 Monthly Budget with columns for Category, Q1, Q2, Q3, Q4, and Annual Total using =SUM formulas.',
+                      },
+                      {
+                        title: 'Create a PDF or Word Document',
+                        subtitle: 'Writes and formats a downloadable report',
+                        icon: FileText,
+                        prompt:
+                          'Create a PDF document titled "Home Office & Local AI Setup Guide" with 3 structured sections and bullet points.',
+                      },
+                      {
+                        title: 'Build an Interactive Mini-App',
+                        subtitle: 'Writes a working calculator or tool you can use right here',
+                        icon: Code2,
+                        prompt:
+                          'Build an interactive Loan & Monthly Payment Calculator web app with sliders for loan amount, interest rate, and term.',
+                      },
+                      {
+                        title: 'Create a Chart or Visual Graphic',
+                        subtitle: 'Generates a high-resolution chart or animation',
+                        icon: ImageIcon,
+                        prompt:
+                          'Generate a bar chart comparing monthly expenses: Housing $1800, Food $650, Utilities $240, Savings $900.',
+                      },
+                    ].map((card, i) => {
+                      const Icon = card.icon
+                      return (
+                        <button
+                          key={i}
+                          onClick={() => handleSendPrompt(card.prompt)}
+                          className="text-left p-4 rounded-xl bg-[#10131A] hover:bg-[#151922] border border-white/[0.075] hover:border-[#D97757]/40 transition group flex flex-col justify-between gap-3"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="h-8 w-8 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-[#D97757]">
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <ArrowUpRight className="w-4 h-4 text-slate-500 group-hover:text-[#D97757] transition" />
+                          </div>
+                          <div>
+                            <div className="text-sm font-medium text-slate-100 group-hover:text-white">
+                              {card.title}
+                            </div>
+                            <div className="text-xs text-slate-400 mt-0.5">
+                              {card.subtitle}
+                            </div>
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {messages.map((msg) => (
+                    <MessageRow
+                      key={msg.id}
+                      msg={msg}
+                      onSelectArtifact={(art) => {
+                        setSelectedArtifact(art)
+                        setActiveSheetIdx(0)
+                        setFilePanelOpen(true)
+                      }}
+                    />
+                  ))}
+
+                  {streamStatus && (
+                    <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400 py-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
+                      <span>{streamStatus}</span>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* UNIFIED CHAT COMPOSER (Single Place for Model Picker + Privacy Toggle!) */}
+          {/* UNIFIED CHAT COMPOSER */}
           <div className="p-3 sm:p-4 border-t border-white/[0.075] bg-[#0B0D12]">
             <div className="max-w-3xl mx-auto">
               <form
@@ -620,10 +687,8 @@ export default function App() {
                   className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-500 resize-none focus:outline-none px-1.5 py-1"
                 />
 
-                {/* Bottom Controls Bar Inside Composer: Model Picker + Download Models + Offline/Web Toggle + Send */}
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/[0.06]">
                   <div className="flex flex-wrap items-center gap-2">
-                    {/* THE SINGLE MODEL SELECTOR */}
                     <div className="relative">
                       <select
                         aria-label="Choose AI Model"
@@ -641,7 +706,6 @@ export default function App() {
                       <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
 
-                    {/* Button to Download / Try More Local Models */}
                     <button
                       type="button"
                       onClick={() => setModelModalOpen(true)}
@@ -652,7 +716,6 @@ export default function App() {
                       <span>+ More Models</span>
                     </button>
 
-                    {/* Plain-English Privacy / Internet Switch */}
                     <button
                       type="button"
                       onClick={() =>
@@ -683,7 +746,6 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Send Button */}
                   <button
                     type="submit"
                     disabled={isStreaming || !promptInput.trim()}
@@ -704,7 +766,7 @@ export default function App() {
           </div>
         </main>
 
-        {/* RIGHT PANEL: CREATED FILES PREVIEW & DOWNLOADS (Only open when viewing a file!) */}
+        {/* RIGHT PANEL: CREATED FILES PREVIEW & DOWNLOADS */}
         {filePanelOpen && (
           <aside className="w-full sm:w-[440px] xl:w-[520px] shrink-0 border-l border-white/[0.075] bg-[#0D0F14] flex flex-col z-20">
             <div className="px-4 py-3 border-b border-white/[0.075] flex items-center justify-between">
@@ -726,7 +788,6 @@ export default function App() {
             <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
               {selectedArtifact ? (
                 <div className="flex-1 flex flex-col min-h-0">
-                  {/* File Action Bar */}
                   <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="text-xs font-semibold text-white truncate">
@@ -758,7 +819,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Live File Preview */}
                   <div className="flex-1 overflow-auto p-4 bg-[#0A0B0E]">
                     {selectedArtifact.category === 'spreadsheet' && (
                       <SpreadsheetPreview
@@ -832,13 +892,12 @@ export default function App() {
                 <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
                   <FolderOpen className="w-8 h-8 mb-2 text-slate-600" />
                   <p className="text-xs leading-relaxed">
-                    No files created yet. Ask the AI in chat to make an Excel spreadsheet,
+                    No files selected. Ask the AI in chat to make an Excel spreadsheet,
                     PDF report, chart, or web app and it will open here automatically!
                   </p>
                 </div>
               )}
 
-              {/* List of Created Files */}
               {artifacts.length > 0 && (
                 <div className="h-40 shrink-0 border-t border-white/[0.075] bg-[#0B0D12] p-3 overflow-y-auto">
                   <div className="text-[11px] font-medium text-slate-400 mb-2">
@@ -846,13 +905,13 @@ export default function App() {
                   </div>
                   <div className="space-y-1">
                     {artifacts.map((art) => (
-                      <button
+                      <div
                         key={art.id}
                         onClick={() => {
                           setSelectedArtifact(art)
                           setActiveSheetIdx(0)
                         }}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 transition ${
+                        className={`group w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 cursor-pointer transition ${
                           selectedArtifact?.id === art.id
                             ? 'bg-[#D97757]/15 border border-[#D97757]/40 text-white'
                             : 'hover:bg-white/[0.04] text-slate-300 border border-transparent'
@@ -862,10 +921,19 @@ export default function App() {
                           <ArtifactTypeBadge category={art.category} />
                           <span className="truncate font-medium">{art.title}</span>
                         </div>
-                        <span className="text-[10px] font-mono text-slate-400 shrink-0 tabular-nums">
-                          {(art.size_bytes / 1024).toFixed(1)} KB
-                        </span>
-                      </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-mono text-slate-400 tabular-nums">
+                            {(art.size_bytes / 1024).toFixed(1)} KB
+                          </span>
+                          <button
+                            onClick={(e) => handleDeleteArtifact(e, art.id)}
+                            title="Permanently delete file from disk & database"
+                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 p-0.5 transition"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -987,7 +1055,7 @@ export default function App() {
         </div>
       )}
 
-      {/* MODEL HUB MODAL (Download & Switch Local Models) */}
+      {/* MODEL HUB MODAL */}
       {modelModalOpen && (
         <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-2xl rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl overflow-hidden">
@@ -1030,7 +1098,7 @@ export default function App() {
 
               <div>
                 <div className="text-xs font-medium text-slate-300 mb-2">
-                  Recommended Models for {hw?.profile_label}
+                  Recommended LLM Models for {hw?.profile_label}
                 </div>
                 <div className="space-y-2">
                   {(hw?.recommended_models || []).map((rec) => {
@@ -1093,7 +1161,9 @@ export default function App() {
 
               <div className="pt-3 border-t border-white/[0.08]">
                 <label className="block text-xs text-slate-300 mb-1.5">
-                  Or Download Any Model from Ollama (e.g. <code className="text-slate-200">gemma2:9b</code>, <code className="text-slate-200">phi4:14b</code>)
+                  Or Download Any Model from Ollama (e.g.{' '}
+                  <code className="text-slate-200">gemma2:9b</code>,{' '}
+                  <code className="text-slate-200">phi4:14b</code>)
                 </label>
                 <div className="flex gap-2">
                   <input
@@ -1192,7 +1262,6 @@ function MessageRow({ msg, onSelectArtifact }) {
         )}
       </div>
 
-      {/* Collapsible Reasoning Trace */}
       {msg.thinking && (
         <div className="mb-3">
           <button
@@ -1214,7 +1283,6 @@ function MessageRow({ msg, onSelectArtifact }) {
         </div>
       )}
 
-      {/* Collapsible Action / Tool Steps */}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mb-3 space-y-1.5">
           {msg.tool_calls.map((tc) => (
@@ -1251,7 +1319,6 @@ function MessageRow({ msg, onSelectArtifact }) {
         </div>
       )}
 
-      {/* Message Text */}
       {msg.content && (
         <div
           className="prose-studio"
@@ -1259,7 +1326,6 @@ function MessageRow({ msg, onSelectArtifact }) {
         />
       )}
 
-      {/* Inline File Cards (Click to Preview or Download) */}
       {msg.artifacts && msg.artifacts.length > 0 && (
         <div className="mt-3 pt-3 border-t border-white/[0.07] grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {msg.artifacts.map((art) => (

@@ -38,12 +38,14 @@ from .agent import (
 from .database import (
     add_message,
     create_conversation,
+    delete_artifact,
     delete_conversation,
     get_conversation,
     get_settings,
     init_db,
     list_artifacts,
     list_conversations,
+    update_conversation_context,
     update_conversation_title,
     update_settings,
 )
@@ -98,7 +100,6 @@ app.add_middleware(
 
 @app.middleware("http")
 async def lan_and_privacy_guard(request: Request, call_next):
-    """Ensure only local machine and private home LAN devices can access the server."""
     client_host = request.client.host if request.client else "127.0.0.1"
     if not _is_private_or_local_ip(client_host):
         return JSONResponse(
@@ -116,6 +117,11 @@ class ChatRequest(BaseModel):
     prompt: str
     model: str = "qwen2.5-coder:7b"
     mode: str = "agent"
+    context: Optional[str] = None
+
+
+class ContextUpdateRequest(BaseModel):
+    context: str
 
 
 class PullModelRequest(BaseModel):
@@ -142,6 +148,7 @@ class DirectToolRequest(BaseModel):
 
 @app.get("/api/system/status")
 async def api_system_status(request: Request):
+    await init_db()
     settings = await get_settings()
     hw = build_hardware_profile(override_profile=settings.get("hardware_profile_override", "auto"))
     installed = await list_installed_models()
@@ -181,7 +188,6 @@ async def api_update_settings(req: SettingsUpdateRequest):
 
 @app.post("/api/models/pull")
 async def api_pull_model(req: PullModelRequest):
-    """Stream model download progress from Ollama."""
     await ensure_ollama_running()
 
     async def event_generator():
@@ -218,7 +224,6 @@ async def api_pull_model(req: PullModelRequest):
 
 @app.post("/api/models/unload")
 async def api_unload_model(req: UnloadModelRequest):
-    """Evict a model from GPU VRAM immediately."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             await client.post(
@@ -237,10 +242,11 @@ async def api_list_conversations():
 
 @app.post("/api/conversations")
 async def api_create_conversation(payload: Dict[str, Any]):
-    title = payload.get("title") or "New Studio Session"
+    title = payload.get("title") or "New Chat"
     model = payload.get("model") or "qwen2.5-coder:7b"
     mode = payload.get("mode") or "agent"
-    conv = await create_conversation(title=title, model=model, mode=mode)
+    context = payload.get("context") or ""
+    conv = await create_conversation(title=title, model=model, mode=mode, context=context)
     return conv
 
 
@@ -252,10 +258,21 @@ async def api_get_conversation(conversation_id: str):
     return conv
 
 
+@app.patch("/api/conversations/{conversation_id}/context")
+async def api_update_conversation_context(conversation_id: str, req: ContextUpdateRequest):
+    await update_conversation_context(conversation_id, req.context)
+    return {"status": "updated", "context": req.context}
+
+
 @app.delete("/api/conversations/{conversation_id}")
 async def api_delete_conversation(conversation_id: str):
-    await delete_conversation(conversation_id)
-    return {"status": "deleted"}
+    res = await delete_conversation(conversation_id)
+    return res
+
+
+@app.delete("/api/artifacts/{artifact_id}")
+async def api_delete_artifact(artifact_id: str):
+    return await delete_artifact(artifact_id)
 
 
 @app.post("/api/chat/stream")
@@ -264,21 +281,38 @@ async def api_chat_stream(req: ChatRequest):
     hw = build_hardware_profile(override_profile=settings.get("hardware_profile_override", "auto"))
 
     conv_id = req.conversation_id
+    active_context = req.context or ""
+
     if not conv_id:
-        short_title = req.prompt.strip()[:46] or "Studio Session"
-        conv = await create_conversation(title=short_title, model=req.model, mode=req.mode)
+        short_title = req.prompt.strip()[:46] or "New Chat"
+        conv = await create_conversation(
+            title=short_title,
+            model=req.model,
+            mode=req.mode,
+            context=active_context,
+        )
         conv_id = conv["id"]
         history_messages = []
     else:
         existing = await get_conversation(conv_id)
         if not existing:
-            short_title = req.prompt.strip()[:46] or "Studio Session"
-            conv = await create_conversation(title=short_title, model=req.model, mode=req.mode)
+            short_title = req.prompt.strip()[:46] or "New Chat"
+            conv = await create_conversation(
+                title=short_title,
+                model=req.model,
+                mode=req.mode,
+                context=active_context,
+            )
             conv_id = conv["id"]
             history_messages = []
         else:
             history_messages = existing.get("messages", [])
-            if len(history_messages) == 0 and existing.get("title") in ("New Studio Session", "Studio Session"):
+            if req.context is not None and req.context != existing.get("context", ""):
+                await update_conversation_context(conv_id, req.context)
+                active_context = req.context
+            else:
+                active_context = existing.get("context", "")
+            if len(history_messages) == 0 and existing.get("title") in ("New Studio Session", "Studio Session", "New Chat"):
                 await update_conversation_title(conv_id, req.prompt.strip()[:46])
 
     user_msg = await add_message(
@@ -289,7 +323,7 @@ async def api_chat_stream(req: ChatRequest):
     )
 
     async def sse_generator():
-        yield f"data: {json.dumps({'type': 'session', 'conversation_id': conv_id, 'user_message': user_msg})}\n\n"
+        yield f"data: {json.dumps({'type': 'session', 'conversation_id': conv_id, 'user_message': user_msg, 'context': active_context})}\n\n"
         async for ev in run_agent_stream(
             conversation_id=conv_id,
             history_messages=history_messages,
@@ -298,6 +332,7 @@ async def api_chat_stream(req: ChatRequest):
             mode=req.mode,
             hw_profile=hw,
             offline_mode=settings.get("air_gap_mode", True),
+            chat_context=active_context,
         ):
             if ev["type"] == "done":
                 saved_msg = await add_message(
@@ -319,7 +354,6 @@ async def api_chat_stream(req: ChatRequest):
 
 @app.post("/api/tools/execute")
 async def api_direct_tool_execute(req: DirectToolRequest):
-    """Execute a studio tool directly from the Workbench UI."""
     settings = await get_settings()
     res = await execute_tool_call(
         func_name=req.tool_name,
@@ -327,6 +361,7 @@ async def api_direct_tool_execute(req: DirectToolRequest):
         conversation_id=req.conversation_id or "",
         active_model=settings.get("default_model", ""),
         vram_handoff=settings.get("auto_vram_handoff", True),
+        offline_mode=settings.get("air_gap_mode", True),
     )
     return res
 
@@ -354,7 +389,6 @@ async def api_serve_artifact_file(filename: str, download: bool = False):
     )
 
 
-# Mount built frontend assets if present
 if (FRONTEND_DIST / "assets").exists():
     app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="assets")
 
