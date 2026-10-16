@@ -5,8 +5,8 @@ Implements:
 - Auto-starting headless `ollama serve` if not already running on 127.0.0.1:11434
 - Hardware-tuned context window (`num_ctx`) and `keep_alive` injection per hardware profile
 - Multi-step Sense -> Plan -> Act -> Synthesize loop with real-time Server-Sent Events (SSE)
-- Native Ollama tool-calling + deterministic fallback tool routing so even non-tool models
-  reliably create Excel sheets, PDF/Word docs, charts, images, animations, and interactive web apps.
+- Full conversation context preservation when switching between models mid-chat
+- Optional live DuckDuckGo Web Search when the user switches from "Offline Only" to "Web Search On"
 """
 
 from __future__ import annotations
@@ -24,12 +24,13 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 import httpx
 
 from .tools import (
-    TOOL_SCHEMAS,
+    get_tool_schemas,
     tool_build_interactive_app,
     tool_create_document,
     tool_create_excel_spreadsheet,
     tool_generate_visual_media,
     tool_run_python_sandbox,
+    tool_search_web,
 )
 
 OLLAMA_BASE = "http://127.0.0.1:11434"
@@ -45,7 +46,6 @@ def find_ollama_binary() -> str:
 
 
 async def ensure_ollama_running() -> bool:
-    """Verify Ollama daemon is reachable on 127.0.0.1:11434; start headless server if needed."""
     try:
         async with httpx.AsyncClient(timeout=1.5) as client:
             r = await client.get(f"{OLLAMA_BASE}/api/tags")
@@ -54,7 +54,6 @@ async def ensure_ollama_running() -> bool:
     except Exception:
         pass
 
-    # Attempt to spawn headless `ollama serve`
     try:
         binary = find_ollama_binary()
         subprocess.Popen(
@@ -126,22 +125,22 @@ async def list_running_models() -> List[Dict[str, Any]]:
         return []
 
 
-SYSTEM_PROMPT_AGENT = """You are Local AI Studio (Antigravity Engine), an autonomous, privacy-first local AI assistant and software/document engineer running 100% on the user's own hardware.
+SYSTEM_PROMPT_AGENT = """You are Local AI Studio, a personal AI assistant and file creator running 100% on the user's computer.
 
-You have direct access to local execution tools:
-1. `create_excel_spreadsheet`: Build formatted `.xlsx` spreadsheets with multiple tabs, headers, rows, and live Excel formulas (`=SUM(...)`, `=AVERAGE(...)`).
-2. `create_document`: Create structured `.pdf`, `.docx`, or `.md` documents and reports.
-3. `build_interactive_app`: Build complete, self-contained HTML5/CSS/JS interactive web apps, calculators, dashboards, or tools.
-4. `generate_visual_media`: Create high-DPI charts, visual graphics, illustrations, or animated motion clips.
-5. `run_python_sandbox`: Run Python 3 scripts locally for data analysis, math, or custom file generation.
+You can answer general questions conversationally AND you have local tools to create real files when asked:
+1. `create_excel_spreadsheet`: Build formatted `.xlsx` Excel spreadsheets with tabs, columns, rows, and live Excel formulas (`=SUM(...)`, `=AVERAGE(...)`).
+2. `create_document`: Create structured `.pdf` or `.docx` (Word) documents.
+3. `build_interactive_app`: Build complete, self-contained HTML5/CSS/JS interactive mini-apps or calculators.
+4. `generate_visual_media`: Create charts, visual graphics, illustrations, or animated motion clips.
+5. `run_python_sandbox`: Run Python 3 code locally for calculations, data processing, or custom file creation.
+6. `search_web`: Search the live internet via DuckDuckGo (only available when Web Search is enabled by the user).
 
 Guidelines:
-- Whenever the user asks to create, generate, or build an Excel spreadsheet, document/PDF/Word file, chart, image/picture, video/animation, or interactive app, ALWAYS call the corresponding tool so a real file artifact is produced.
-- After executing a tool, explain clearly what you built, highlight key formulas/sections/features, and keep your prose crisp, well-structured, and insightful.
-- Never claim you cannot create files, spreadsheets, or visuals—use your local tools to produce them immediately.
+- For normal questions or conversation, simply reply naturally and clearly without calling any tools.
+- Whenever the user asks you to make an Excel spreadsheet, a PDF or Word document, a chart, a picture, a video/animation, or an interactive app, call the matching tool so the real file is created for them.
 """
 
-SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, thoughtful, privacy-first local AI assistant running 100% on the user's machine. Provide clear, well-structured, insightful responses using clean Markdown formatting."""
+SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""
 
 
 async def execute_tool_call(
@@ -150,8 +149,8 @@ async def execute_tool_call(
     conversation_id: str,
     active_model: str,
     vram_handoff: bool,
+    offline_mode: bool = True,
 ) -> Dict[str, Any]:
-    """Dispatch a single tool call and return standardized execution result + artifacts."""
     start_t = time.time()
     try:
         if func_name == "create_excel_spreadsheet":
@@ -188,6 +187,11 @@ async def execute_tool_call(
                 description=args.get("description", "Python sandbox script"),
                 conversation_id=conversation_id,
             )
+        elif func_name == "search_web":
+            res = await tool_search_web(
+                query=args.get("query", ""),
+                offline_mode=offline_mode,
+            )
         else:
             res = {"status": "error", "summary": f"Unknown tool: {func_name}"}
     except Exception as exc:
@@ -198,16 +202,7 @@ async def execute_tool_call(
 
 
 def detect_proactive_artifact_intent(user_prompt: str) -> Optional[Dict[str, Any]]:
-    """
-    If a user explicitly requests a spreadsheet, PDF/Word doc, image, video, or web app and the
-    selected local model didn't emit a native tool call, synthesize a structured tool call fallback.
-    """
     p_low = user_prompt.lower()
-    if any(k in p_low for k in ("excel", "spreadsheet", ".xlsx", "workbook", "budget sheet", "tracker sheet")):
-        return {"name": "create_excel_spreadsheet", "intent": "spreadsheet"}
-    if any(k in p_low for k in ("word doc", ".docx", "pdf document", "pdf report", "create a pdf", "generate a pdf")):
-        fmt = "docx" if ("word" in p_low or "docx" in p_low) else "pdf"
-        return {"name": "create_document", "intent": "document", "format": fmt}
     if any(k in p_low for k in ("generate an image", "create a picture", "draw a picture", "generate a picture", "create an image")):
         return {"name": "generate_visual_media", "intent": "image"}
     if any(k in p_low for k in ("generate a video", "create a video", "animate", "motion clip")):
@@ -222,25 +217,19 @@ async def run_agent_stream(
     model: str,
     mode: str,
     hw_profile: Dict[str, Any],
+    offline_mode: bool = True,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    """
-    Stream SSE events for the conversation turn:
-    - {"type": "status", "message": "..."}
-    - {"type": "tool_start", "tool": {...}}
-    - {"type": "tool_end", "tool": {...}, "artifact": {...}}
-    - {"type": "thinking", "delta": "..."}
-    - {"type": "token", "delta": "..."}
-    - {"type": "done", "message": {...}}
-    """
     await ensure_ollama_running()
     tuning = hw_profile.get("tuning", {})
     num_ctx = tuning.get("recommended_num_ctx", 8192)
     keep_alive = tuning.get("keep_alive", "10m")
     vram_handoff = tuning.get("vram_handoff_before_media", True)
+    allow_web_search = not offline_mode
 
     sys_prompt = SYSTEM_PROMPT_AGENT if mode == "agent" else SYSTEM_PROMPT_CHAT
     ollama_messages = [{"role": "system", "content": sys_prompt}]
-    for m in history_messages[-14:]:
+    # Full conversation history is passed regardless of which model generated earlier turns
+    for m in history_messages[-16:]:
         if m["role"] in ("user", "assistant"):
             ollama_messages.append({"role": m["role"], "content": m["content"]})
     ollama_messages.append({"role": "user", "content": user_prompt})
@@ -248,17 +237,17 @@ async def run_agent_stream(
     tool_traces: List[Dict[str, Any]] = []
     collected_artifacts: List[Dict[str, Any]] = []
 
-    # Step 1: In Agent Mode, check if model executes native tool calls
     if mode == "agent":
-        yield {"type": "status", "message": f"Orchestrating with {model} ({hw_profile.get('short_badge', 'Local GPU')})..."}
+        yield {"type": "status", "message": f"Thinking with {model}..."}
         try:
+            active_schemas = get_tool_schemas(allow_web_search=allow_web_search)
             async with httpx.AsyncClient(timeout=120.0) as client:
                 probe_resp = await client.post(
                     f"{OLLAMA_BASE}/api/chat",
                     json={
                         "model": model,
                         "messages": ollama_messages,
-                        "tools": TOOL_SCHEMAS,
+                        "tools": active_schemas,
                         "stream": False,
                         "keep_alive": keep_alive,
                         "options": {"num_ctx": num_ctx, "temperature": 0.3},
@@ -295,6 +284,7 @@ async def run_agent_stream(
                                 conversation_id=conversation_id,
                                 active_model=model,
                                 vram_handoff=vram_handoff,
+                                offline_mode=offline_mode,
                             )
 
                             trace_entry["status"] = exec_res.get("status", "success")
@@ -313,16 +303,18 @@ async def run_agent_stream(
                             yield {"type": "tool_end", "tool": trace_entry, "artifacts": new_arts}
 
                             ollama_messages.append(msg_obj)
+                            tool_payload = {
+                                "status": exec_res.get("status"),
+                                "summary": trace_entry["summary"],
+                                "artifacts_created": [a["filename"] for a in new_arts],
+                            }
+                            if exec_res.get("results"):
+                                tool_payload["web_results"] = exec_res["results"]
                             ollama_messages.append({
                                 "role": "tool",
-                                "content": json.dumps({
-                                    "status": exec_res.get("status"),
-                                    "summary": trace_entry["summary"],
-                                    "artifacts_created": [a["filename"] for a in new_arts],
-                                }),
+                                "content": json.dumps(tool_payload),
                             })
                     else:
-                        # If the model didn't call a tool, check if the prompt explicitly asked for an image/video
                         fallback = detect_proactive_artifact_intent(user_prompt)
                         if fallback and fallback["intent"] in ("image", "video"):
                             trace_id = f"tc_{int(time.time() * 1000)}_fb"
@@ -343,6 +335,7 @@ async def run_agent_stream(
                                 conversation_id=conversation_id,
                                 active_model=model,
                                 vram_handoff=vram_handoff,
+                                offline_mode=offline_mode,
                             )
                             trace_entry["status"] = exec_res.get("status", "success")
                             trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
@@ -352,7 +345,6 @@ async def run_agent_stream(
                                 collected_artifacts.append(exec_res["artifact"])
                                 yield {"type": "tool_end", "tool": trace_entry, "artifacts": [exec_res["artifact"]]}
 
-                        # Check if non-tool model already returned a complete answer during the probe
                         direct_content = msg_obj.get("content", "")
                         if direct_content and not tool_traces:
                             eval_count = probe_data.get("eval_count", 0)
@@ -361,7 +353,6 @@ async def run_agent_stream(
                             thinking_text, clean_text = _split_thinking(direct_content)
                             if thinking_text:
                                 yield {"type": "thinking", "delta": thinking_text}
-                            # Stream in smooth chunks for natural reading feel
                             chunk_size = 28
                             for i in range(0, len(clean_text), chunk_size):
                                 yield {"type": "token", "delta": clean_text[i : i + chunk_size]}
@@ -376,10 +367,8 @@ async def run_agent_stream(
                             }
                             return
         except Exception:
-            # Fall through to standard streaming chat if model does not support `tools` field
             pass
 
-    # Step 2: Stream final synthesis / conversational response from Ollama
     full_content = ""
     thinking_content = ""
     in_think_block = False
@@ -403,9 +392,9 @@ async def run_agent_stream(
                 if resp.status_code != 200:
                     err_body = await resp.aread()
                     err_msg = (
-                        f"Model `{model}` is not installed yet or still downloading. "
-                        f"Open the **Model Hub** in the top bar to pull `{model}` with one click.\n\n"
-                        f"*(Ollama detail: {err_body.decode('utf-8', errors='ignore')[:200]})*"
+                        f"Model `{model}` is not installed yet. "
+                        f"Click **Add / Manage Models** to download `{model}`.\n\n"
+                        f"*(Detail: {err_body.decode('utf-8', errors='ignore')[:200]})*"
                     )
                     yield {"type": "token", "delta": err_msg}
                     yield {

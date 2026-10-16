@@ -297,6 +297,7 @@ async def api_chat_stream(req: ChatRequest):
             model=req.model,
             mode=req.mode,
             hw_profile=hw,
+            offline_mode=settings.get("air_gap_mode", True),
         ):
             if ev["type"] == "done":
                 saved_msg = await add_message(

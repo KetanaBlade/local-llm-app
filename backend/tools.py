@@ -4,14 +4,15 @@ Antigravity Agent Tool Suite & Sandbox Executor.
 Provides structured local tools for:
 1. create_excel_spreadsheet — Builds formatted .xlsx workbooks with formulas, styling, and live UI table previews
 2. create_document — Generates .pdf and .docx documents with structured sections and tables
-3. generate_visual_media — Generates high-DPI images, charts, or motion sequences (via local ComfyUI/SD API with VRAM hand-off, or built-in Pillow/Matplotlib Studio Renderer)
+3. generate_visual_media — Generates high-DPI images, charts, or motion sequences
 4. build_interactive_app — Creates self-contained interactive HTML/CSS/JS web apps with live preview
 5. run_python_sandbox — Executes custom Python scripts and auto-captures any generated files as Artifacts
+6. search_web — Searches DuckDuckGo when the user turns ON "Allow Web Search" (blocked in Offline Mode)
 """
 
 from __future__ import annotations
 
-import json
+import html
 import math
 import mimetypes
 import platform
@@ -19,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,7 +42,7 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", text.strip().lower()).strip("_")
-    return s[:48] or f"artifact_{int(time.time())}"
+    return s[:48] or f"file_{int(time.time())}"
 
 
 def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
@@ -70,6 +72,53 @@ def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
         return {"error": str(exc), "sheets": []}
 
 
+async def tool_search_web(query: str, offline_mode: bool = True) -> Dict[str, Any]:
+    """
+    Perform a privacy-preserving web search via DuckDuckGo HTML when Offline Mode is turned OFF.
+    Strictly blocked if Offline Mode is ON.
+    """
+    if offline_mode:
+        return {
+            "status": "blocked",
+            "summary": "Blocked by Offline Mode: Web search is disabled while 'Offline Only' privacy lock is active.",
+            "results": [],
+        }
+
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            body = resp.text
+
+        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', body, flags=re.DOTALL)
+        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>', body, flags=re.DOTALL)
+
+        clean_results = []
+        for idx, raw_title in enumerate(titles[:5]):
+            t_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            s_clean = ""
+            if idx < len(snippets):
+                raw_s = snippets[idx][0] or snippets[idx][1]
+                s_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_s)).strip()
+            if t_clean:
+                clean_results.append({"title": t_clean, "snippet": s_clean})
+
+        return {
+            "status": "success",
+            "summary": f"Found {len(clean_results)} web results for '{query}'.",
+            "results": clean_results,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "summary": f"Web search failed: {exc}",
+            "results": [],
+        }
+
+
 async def tool_create_excel_spreadsheet(
     title: str,
     sheets: List[Dict[str, Any]],
@@ -82,7 +131,6 @@ async def tool_create_excel_spreadsheet(
     filepath = ARTIFACTS_DIR / filename
 
     wb = openpyxl.Workbook()
-    # Remove default sheet if we have custom sheets
     default_ws = wb.active
 
     header_fill = PatternFill(start_color="18181B", end_color="18181B", fill_type="solid")
@@ -139,7 +187,6 @@ async def tool_create_excel_spreadsheet(
             )
             ws.row_dimensions[r_idx].height = 22
             for c_idx, val in enumerate(row_vals, start=1):
-                # Coerce numeric strings if appropriate
                 if isinstance(val, str) and not val.startswith("="):
                     clean_num = val.replace("$", "").replace(",", "").strip()
                     try:
@@ -167,7 +214,6 @@ async def tool_create_excel_spreadsheet(
                 else:
                     cell.alignment = Alignment(horizontal="left", vertical="center")
 
-        # Auto-fit columns
         for col in ws.columns:
             max_len = 10
             col_letter = get_column_letter(col[0].column)
@@ -201,7 +247,7 @@ async def tool_create_document(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Create a formatted PDF (.pdf) or Word (.docx) document with headings, paragraphs, bullet lists, and tables.
+    Create a formatted PDF (.pdf) or Word (.docx) document with headings, paragraphs, and bullet lists.
     """
     fmt = doc_format.lower().strip().lstrip(".")
     if fmt not in ("pdf", "docx", "md"):
@@ -339,13 +385,12 @@ async def tool_build_interactive_app(
     )
     return {
         "status": "success",
-        "summary": f"Built interactive web application '{filename}' ready for live preview.",
+        "summary": f"Built interactive web application '{filename}'.",
         "artifact": artifact,
     }
 
 
 async def _evict_ollama_vram_if_needed(model: str, vram_handoff: bool) -> bool:
-    """Flush active LLM from discrete VRAM before launching heavy GPU diffusion pipelines."""
     if not vram_handoff or not model:
         return False
     try:
@@ -367,18 +412,11 @@ async def tool_generate_visual_media(
     vram_handoff: bool = True,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Generate an image, data visualization chart, or animated motion clip locally.
-    - Checks local Automatic1111 (:7860) / ComfyUI (:8188) endpoints first (with automatic VRAM hand-off).
-    - If chart_data is supplied, renders a high-DPI Matplotlib visualization.
-    - Otherwise renders a high-resolution procedural artwork / motion GIF on-device so local visual creation works out-of-the-box.
-    """
     from PIL import Image, ImageDraw, ImageFilter
 
     is_video = media_type.lower() in ("video", "animation", "gif", "motion")
     slug = _slugify(prompt[:36])
 
-    # 1. Data Visualization Chart via Matplotlib
     if chart_data and isinstance(chart_data, dict) and chart_data.get("labels") and chart_data.get("values"):
         import matplotlib
         matplotlib.use("Agg")
@@ -434,7 +472,6 @@ async def tool_generate_visual_media(
         )
         return {"status": "success", "summary": f"Rendered high-DPI chart '{filename}'.", "artifact": artifact}
 
-    # 2. Check if local SD WebUI / Forge (:7860) is running for neural diffusion
     if not is_video:
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
@@ -459,18 +496,17 @@ async def tool_generate_visual_media(
                             category="image",
                             mime_type="image/png",
                             size_bytes=filepath.stat().st_size,
-                            preview_data={"prompt": prompt, "engine": "Local Diffusion (:7860) + VRAM Hand-Off"},
+                            preview_data={"prompt": prompt, "engine": "Local Diffusion (:7860)"},
                             conversation_id=conversation_id,
                         )
                         return {
                             "status": "success",
-                            "summary": f"Generated neural image '{filename}' via local diffusion engine.",
+                            "summary": f"Generated image '{filename}' via local diffusion engine.",
                             "artifact": artifact,
                         }
         except Exception:
             pass
 
-    # 3. Built-in Local Procedural Canvas / Motion Studio (Zero External Dependencies)
     if is_video:
         filename = f"motion_{slug}_{int(time.time()) % 10000}.gif"
         filepath = ARTIFACTS_DIR / filename
@@ -480,7 +516,6 @@ async def tool_generate_visual_media(
             t = f_idx / 24.0
             img = Image.new("RGB", (width, height), (13, 15, 20))
             draw = ImageDraw.Draw(img)
-            # Animated harmonic waves and orbital geometry
             for ring in range(6):
                 phase = t * 2 * math.pi + ring * 0.55
                 cx = int(width * 0.5 + math.cos(phase) * (90 + ring * 18))
@@ -493,7 +528,7 @@ async def tool_generate_visual_media(
                 )
                 draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=2)
             draw.rectangle([20, height - 54, width - 20, height - 18], fill=(20, 23, 30))
-            draw.text((34, height - 42), f"LOCAL MOTION STUDIO  •  {prompt[:46].upper()}", fill=(235, 237, 242))
+            draw.text((34, height - 42), f"LOCAL MOTION  •  {prompt[:46].upper()}", fill=(235, 237, 242))
             frames.append(img)
 
         frames[0].save(
@@ -509,29 +544,26 @@ async def tool_generate_visual_media(
             category="video",
             mime_type="image/gif",
             size_bytes=filepath.stat().st_size,
-            preview_data={"prompt": prompt, "engine": "On-Device Procedural Motion Engine (24 frames)"},
+            preview_data={"prompt": prompt, "engine": "On-Device Procedural Motion (24 frames)"},
             conversation_id=conversation_id,
         )
         return {
             "status": "success",
-            "summary": f"Generated animated motion clip '{filename}'.",
+            "summary": f"Generated animated clip '{filename}'.",
             "artifact": artifact,
         }
 
-    # High-resolution procedural studio artwork
     filename = f"visual_{slug}_{int(time.time()) % 10000}.png"
     filepath = ARTIFACTS_DIR / filename
     width, height = 1280, 760
     img = Image.new("RGB", (width, height), (12, 14, 18))
     draw = ImageDraw.Draw(img)
 
-    # Subtle architectural grid
     for x in range(0, width, 40):
         draw.line([(x, 0), (x, height)], fill=(22, 25, 32), width=1)
     for y in range(0, height, 40):
         draw.line([(0, y), (width, y)], fill=(22, 25, 32), width=1)
 
-    # Seed deterministic geometry from prompt text
     seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(prompt))
     for i in range(14):
         angle = (seed_val + i * 47) % 360
@@ -552,12 +584,11 @@ async def tool_generate_visual_media(
 
     img = img.filter(ImageFilter.SMOOTH)
     draw = ImageDraw.Draw(img)
-    # Editorial footer plate
     draw.rectangle([40, height - 110, width - 40, height - 36], fill=(18, 21, 28), outline=(46, 52, 64), width=1)
     draw.text((64, height - 92), prompt[:78].upper(), fill=(243, 244, 246))
     draw.text(
         (64, height - 64),
-        "LOCAL AI STUDIO  •  ON-DEVICE SYNTHESIS (CONNECT COMFYUI :8188 OR FORGE :7860 FOR FLUX/SDXL)",
+        "ON-DEVICE SYNTHESIS (CONNECT COMFYUI :8188 OR FORGE :7860 FOR FLUX/SDXL)",
         fill=(156, 163, 175),
     )
     img.save(filepath, "PNG")
@@ -568,12 +599,12 @@ async def tool_generate_visual_media(
         category="image",
         mime_type="image/png",
         size_bytes=filepath.stat().st_size,
-        preview_data={"prompt": prompt, "engine": "Local Studio Vector/Canvas Renderer"},
+        preview_data={"prompt": prompt, "engine": "Local Canvas Renderer"},
         conversation_id=conversation_id,
     )
     return {
         "status": "success",
-        "summary": f"Created visual graphic '{filename}'.",
+        "summary": f"Created graphic '{filename}'.",
         "artifact": artifact,
     }
 
@@ -583,10 +614,6 @@ async def tool_run_python_sandbox(
     description: str = "Execute Python script in local sandbox",
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Execute custom Python code inside the workspace artifacts directory and automatically
-    register any newly created or modified files (.xlsx, .pdf, .docx, .png, .html, .csv) as Artifacts.
-    """
     before_files = {p.name: p.stat().st_mtime for p in ARTIFACTS_DIR.iterdir() if p.is_file()}
     script_file = ARTIFACTS_DIR / f"_sandbox_exec_{int(time.time() * 1000)}.py"
     script_file.write_text(script, encoding="utf-8")
@@ -662,137 +689,131 @@ async def tool_run_python_sandbox(
     }
 
 
-TOOL_SCHEMAS: List[Dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "create_excel_spreadsheet",
-            "description": (
-                "Create a professionally styled Excel (.xlsx) workbook with custom tabs, headers, rows, "
-                "and dynamic Excel formulas (like =SUM(B2:E2)). Use this whenever the user asks for an Excel sheet, "
-                "budget, tracker, financial model, or spreadsheet template."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Title of the Excel workbook"},
-                    "sheets": {
-                        "type": "array",
-                        "description": "List of worksheet definitions",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "headers": {"type": "array", "items": {"type": "string"}},
-                                "rows": {
-                                    "type": "array",
-                                    "items": {"type": "array", "items": {"type": ["string", "number"]}},
+def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
+    schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "create_excel_spreadsheet",
+                "description": (
+                    "Create a formatted Excel (.xlsx) spreadsheet with custom tabs, headers, rows, "
+                    "and live Excel formulas (like =SUM(B2:E2))."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "Title of the Excel workbook"},
+                        "sheets": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "headers": {"type": "array", "items": {"type": "string"}},
+                                    "rows": {
+                                        "type": "array",
+                                        "items": {"type": "array", "items": {"type": ["string", "number"]}},
+                                    },
+                                },
+                                "required": ["name", "headers", "rows"],
+                            },
+                        },
+                    },
+                    "required": ["title", "sheets"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "create_document",
+                "description": "Create a formatted PDF (.pdf) or Word (.docx) document with structured sections.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "doc_format": {"type": "string", "enum": ["pdf", "docx", "md"]},
+                        "sections": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "heading": {"type": "string"},
+                                    "body": {"type": "string"},
+                                    "bullets": {"type": "array", "items": {"type": "string"}},
                                 },
                             },
-                            "required": ["name", "headers", "rows"],
                         },
                     },
+                    "required": ["title", "doc_format", "sections"],
                 },
-                "required": ["title", "sheets"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "create_document",
-            "description": (
-                "Create a formatted PDF (.pdf) or Word (.docx) document with structured sections, headings, "
-                "paragraphs, and bullet points."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Document title"},
-                    "doc_format": {
-                        "type": "string",
-                        "enum": ["pdf", "docx", "md"],
-                        "description": "Output file format (pdf, docx, or md)",
+        {
+            "type": "function",
+            "function": {
+                "name": "build_interactive_app",
+                "description": "Build a self-contained HTML/CSS/JavaScript interactive web app or calculator.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "html_code": {"type": "string"},
                     },
-                    "sections": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "heading": {"type": "string"},
-                                "body": {"type": "string"},
-                                "bullets": {"type": "array", "items": {"type": "string"}},
-                            },
-                        },
-                    },
+                    "required": ["title", "html_code"],
                 },
-                "required": ["title", "doc_format", "sections"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "build_interactive_app",
-            "description": (
-                "Build a complete, self-contained interactive HTML/CSS/JavaScript web application, calculator, "
-                "dashboard, or prototype that renders live in the Studio Workbench."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {"type": "string", "description": "Application title"},
-                    "html_code": {
-                        "type": "string",
-                        "description": "Complete self-contained HTML5 document including <style> and <script>",
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_visual_media",
+                "description": "Generate an image, chart, or animated motion clip locally.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "media_type": {"type": "string", "enum": ["image", "video", "chart"]},
+                        "chart_data": {"type": "object"},
                     },
+                    "required": ["prompt", "media_type"],
                 },
-                "required": ["title", "html_code"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_visual_media",
-            "description": (
-                "Generate an image, illustration, data chart, or animated motion clip locally."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prompt": {"type": "string", "description": "Detailed visual description or chart title"},
-                    "media_type": {
-                        "type": "string",
-                        "enum": ["image", "video", "chart"],
-                        "description": "Type of visual media to synthesize",
+        {
+            "type": "function",
+            "function": {
+                "name": "run_python_sandbox",
+                "description": "Run a custom Python 3 script locally for calculations or file creation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "description": {"type": "string"},
+                        "script": {"type": "string"},
                     },
-                    "chart_data": {
-                        "type": "object",
-                        "description": "Optional data for chart rendering: {'type': 'bar'|'line', 'labels': [...], 'values': [...]}",
-                    },
+                    "required": ["description", "script"],
                 },
-                "required": ["prompt", "media_type"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "run_python_sandbox",
-            "description": (
-                "Execute a custom Python 3 script in the local sandbox to perform calculations, data analysis, "
-                "or custom file generation. Any files saved in the current working directory are automatically "
-                "captured as downloadable Artifacts."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string", "description": "Brief summary of what the script does"},
-                    "script": {"type": "string", "description": "Complete Python 3 code to run"},
+    ]
+
+    if allow_web_search:
+        schemas.append({
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search the live internet via DuckDuckGo for current events, facts, or documentation.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "Search query"},
+                    },
+                    "required": ["query"],
                 },
-                "required": ["description", "script"],
             },
-        },
-    },
-]
+        })
+
+    return schemas
+
+
+TOOL_SCHEMAS = get_tool_schemas(allow_web_search=False)
