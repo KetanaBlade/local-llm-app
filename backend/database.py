@@ -1,0 +1,281 @@
+"""
+Local SQLite Database Layer (100% On-Device Data Residency).
+
+Stores:
+- Conversations & streaming message history
+- Tool execution traces (Antigravity Sense -> Plan -> Act logs)
+- Generated Artifacts (Excel sheets, Word docs, PDFs, Images, Videos, Interactive Web Apps)
+- Privacy & Hardware Settings (Air-Gap mode, Hardware Profile override, Tool safety policy)
+"""
+
+from __future__ import annotations
+
+import json
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import aiosqlite
+
+DB_PATH = Path(__file__).resolve().parent.parent / "local_ai_studio.db"
+
+
+async def init_db() -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                model TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'agent',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                thinking TEXT DEFAULT '',
+                tool_calls TEXT DEFAULT '[]',
+                artifacts TEXT DEFAULT '[]',
+                model TEXT DEFAULT '',
+                tokens_per_sec REAL DEFAULT 0,
+                created_at REAL NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT,
+                title TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                category TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                preview_data TEXT DEFAULT '{}',
+                created_at REAL NOT NULL
+            )
+            """
+        )
+        # Seed default settings if missing
+        defaults = {
+            "air_gap_mode": "true",
+            "hardware_profile_override": "auto",
+            "default_model": "qwen2.5-coder:7b",
+            "agent_mode": "antigravity",
+            "auto_vram_handoff": "true",
+        }
+        for k, v in defaults.items():
+            await db.execute(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                (k, v),
+            )
+        await db.commit()
+
+
+async def get_settings() -> Dict[str, Any]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT key, value FROM settings")
+        rows = await cursor.fetchall()
+        raw = {r["key"]: r["value"] for r in rows}
+        return {
+            "air_gap_mode": raw.get("air_gap_mode", "true") == "true",
+            "hardware_profile_override": raw.get("hardware_profile_override", "auto"),
+            "default_model": raw.get("default_model", "qwen2.5-coder:7b"),
+            "agent_mode": raw.get("agent_mode", "antigravity"),
+            "auto_vram_handoff": raw.get("auto_vram_handoff", "true") == "true",
+        }
+
+
+async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        for k, v in updates.items():
+            val_str = "true" if v is True else ("false" if v is False else str(v))
+            await db.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (k, val_str),
+            )
+        await db.commit()
+    return await get_settings()
+
+
+async def create_conversation(title: str, model: str, mode: str = "agent") -> Dict[str, Any]:
+    cid = str(uuid.uuid4())
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO conversations (id, title, model, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (cid, title, model, mode, now, now),
+        )
+        await db.commit()
+    return {
+        "id": cid,
+        "title": title,
+        "model": model,
+        "mode": mode,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def list_conversations() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title, model, mode, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title, model, mode, created_at, updated_at FROM conversations WHERE id = ?",
+            (conversation_id,),
+        )
+        conv = await cursor.fetchone()
+        if not conv:
+            return None
+        msg_cursor = await db.execute(
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+            (conversation_id,),
+        )
+        msg_rows = await msg_cursor.fetchall()
+        messages = []
+        for r in msg_rows:
+            d = dict(r)
+            d["tool_calls"] = json.loads(d.get("tool_calls") or "[]")
+            d["artifacts"] = json.loads(d.get("artifacts") or "[]")
+            messages.append(d)
+        res = dict(conv)
+        res["messages"] = messages
+        return res
+
+
+async def delete_conversation(conversation_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+        await db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        await db.commit()
+
+
+async def add_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    thinking: str = "",
+    tool_calls: Optional[List[Dict[str, Any]]] = None,
+    artifacts: Optional[List[Dict[str, Any]]] = None,
+    model: str = "",
+    tokens_per_sec: float = 0.0,
+) -> Dict[str, Any]:
+    mid = str(uuid.uuid4())
+    now = time.time()
+    tc_json = json.dumps(tool_calls or [])
+    art_json = json.dumps(artifacts or [])
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO messages
+            (id, conversation_id, role, content, thinking, tool_calls, artifacts, model, tokens_per_sec, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (mid, conversation_id, role, content, thinking, tc_json, art_json, model, tokens_per_sec, now),
+        )
+        await db.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (now, conversation_id),
+        )
+        await db.commit()
+    return {
+        "id": mid,
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "thinking": thinking,
+        "tool_calls": tool_calls or [],
+        "artifacts": artifacts or [],
+        "model": model,
+        "tokens_per_sec": tokens_per_sec,
+        "created_at": now,
+    }
+
+
+async def update_conversation_title(conversation_id: str, title: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+            (title, time.time(), conversation_id),
+        )
+        await db.commit()
+
+
+async def register_artifact(
+    title: str,
+    filename: str,
+    category: str,
+    mime_type: str,
+    size_bytes: int,
+    preview_data: Optional[Dict[str, Any]] = None,
+    conversation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    aid = str(uuid.uuid4())
+    now = time.time()
+    prev_json = json.dumps(preview_data or {})
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO artifacts
+            (id, conversation_id, title, filename, category, mime_type, size_bytes, preview_data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (aid, conversation_id, title, filename, category, mime_type, size_bytes, prev_json, now),
+        )
+        await db.commit()
+    return {
+        "id": aid,
+        "conversation_id": conversation_id,
+        "title": title,
+        "filename": filename,
+        "url": f"/api/artifacts/file/{filename}",
+        "category": category,
+        "mime_type": mime_type,
+        "size_bytes": size_bytes,
+        "preview_data": preview_data or {},
+        "created_at": now,
+    }
+
+
+async def list_artifacts() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 100")
+        rows = await cursor.fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            d["url"] = f"/api/artifacts/file/{d['filename']}"
+            d["preview_data"] = json.loads(d.get("preview_data") or "{}")
+            items.append(d)
+        return items

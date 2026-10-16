@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local Data & Databases (Privacy First)
+*.db
+*.db-journal
+*.db-wal
+*.sqlite3
+workspace/artifacts/*
+!workspace/artifacts/.gitkeep
+workspace/projects/*
+!workspace/projects/.gitkeep
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log

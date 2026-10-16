@@ -1,0 +1,135 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    box-sizing: border-box;
+    border-color: rgba(255, 255, 255, 0.075);
+  }
+
+  body {
+    background-color: #0A0B0E;
+    color: #F3F4F6;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Precision keyboard focus state (WCAG 2.1 AA) */
+  *:focus-visible {
+    outline: 2px solid #D97757;
+    outline-offset: 2px;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom sleek scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* Editorial Markdown Typography */
+.prose-studio {
+  color: #E5E7EB;
+  line-height: 1.68;
+  font-size: 0.95rem;
+}
+
+.prose-studio h1,
+.prose-studio h2,
+.prose-studio h3 {
+  color: #F9FAFB;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose-studio h1 { font-size: 1.35rem; }
+.prose-studio h2 { font-size: 1.15rem; }
+.prose-studio h3 { font-size: 1.02rem; }
+
+.prose-studio p {
+  margin-bottom: 0.85rem;
+}
+
+.prose-studio ul,
+.prose-studio ol {
+  margin-bottom: 0.85rem;
+  padding-left: 1.35rem;
+}
+
+.prose-studio ul { list-style-type: disc; }
+.prose-studio ol { list-style-type: decimal; }
+
+.prose-studio li {
+  margin-bottom: 0.3rem;
+}
+
+.prose-studio code {
+  font-family: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.84em;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.15rem 0.38rem;
+  border-radius: 0.3rem;
+  color: #F3F4F6;
+}
+
+.prose-studio pre {
+  background: #0D0F14;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  margin: 0.85rem 0;
+}
+
+.prose-studio pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #E2E8F0;
+  font-size: 0.83rem;
+}
+
+.prose-studio table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0;
+  font-size: 0.86rem;
+}
+
+.prose-studio th,
+.prose-studio td {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.prose-studio th {
+  background: #14171F;
+  color: #F9FAFB;
+  font-weight: 600;
+}
