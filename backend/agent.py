@@ -247,6 +247,7 @@ You can answer general questions conversationally AND you have local tools to cr
 Guidelines:
 - For normal questions or conversation, simply reply naturally and clearly without calling any tools.
 - Whenever the user asks you to make an Excel spreadsheet, a PDF or Word document, a chart, a picture, a video/animation, or an interactive app, call the matching tool so the real file is created for them.
+- When calling `generate_visual_media` for an image: preserve the user's intended artistic or realistic style. If the user requested a realistic, photorealistic, or real-life image, explicitly write photographic terms into the `prompt` (e.g. 'candid 35mm photo of...', 'photorealistic DSLR photograph', 'natural lighting').
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""

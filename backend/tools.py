@@ -526,8 +526,25 @@ async def tool_generate_visual_media(
         filename = f"img_{slug}_{int(time.time()) % 10000}.png"
         filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
         seed = random.randint(1, 999999999)
-        enhanced_prompt = f"{prompt}, masterpiece, high resolution, detailed, sharp focus, natural lighting"
-        negative_prompt = "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
+        # Detect whether the user requested photorealism or photographic style
+        photo_keywords = (
+            "photo", "photograph", "realistic", "photorealistic", "real life",
+            "dslr", "candid", "portrait", "hyperrealistic", "shot on", "raw photo"
+        )
+        is_photo_request = any(kw in prompt.lower() for kw in photo_keywords)
+
+        if is_photo_request:
+            enhanced_prompt = f"{prompt}, raw photo, 35mm photograph, DSLR, detailed skin texture, natural ambient lighting, sharp focus, 8k uhd"
+            negative_prompt = (
+                "drawing, painting, illustration, cartoon, anime, 3d render, CGI, digital art, "
+                "concept art, sketch, airbrushed, cartoonish, blurry, low quality, deformed, "
+                "watermark, text, signature, ugly, bad anatomy"
+            )
+        else:
+            enhanced_prompt = f"{prompt}, high quality, detailed, sharp focus, natural lighting"
+            negative_prompt = (
+                "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
+            )
 
         cmd = [
             str(SD_CLI_PATH),
