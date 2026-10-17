@@ -15,6 +15,7 @@ frontend/.vite/
 *.db
 *.db-journal
 *.db-wal
+*.db-shm
 *.sqlite3
 workspace/artifacts/*
 !workspace/artifacts/.gitkeep
@@ -29,3 +30,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+*.lnk
+*.tmp
+scratch/

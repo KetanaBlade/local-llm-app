@@ -17,9 +17,9 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 MODELS = [
     {
-        "name": "Realistic Vision V5.1 (Photorealism)",
-        "filename": "realisticVisionV51_v51VAE.safetensors",
-        "url": "https://huggingface.co/frankjoshua/realisticVisionV51_v51VAE/resolve/main/realisticVisionV51_v51VAE.safetensors",
+        "name": "CyberRealistic V8 FP16 (Photorealism)",
+        "filename": "CyberRealistic_V8_FP16.safetensors",
+        "url": "https://huggingface.co/cyberdelia/CyberRealistic/resolve/main/CyberRealistic_V8_FP16.safetensors",
         "expected_min_mb": 1800,
     },
     {
