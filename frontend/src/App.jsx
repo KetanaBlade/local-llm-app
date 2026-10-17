@@ -25,6 +25,8 @@ import {
   FolderOpen,
   Sparkles,
   BookOpen,
+  Moon,
+  Power,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -66,6 +68,37 @@ export default function App() {
   const [pullProgress, setPullProgress] = useState(null)
   const [customModelName, setCustomModelName] = useState('')
   const [flushingVram, setFlushingVram] = useState(false)
+
+  // Sleep mode (0 MB VRAM) & graceful shutdown state
+  const [isSleeping, setIsSleeping] = useState(false)
+  const [sleepingLoading, setSleepingLoading] = useState(false)
+  const [shutdownModalOpen, setShutdownModalOpen] = useState(false)
+  const [isShutdown, setIsShutdown] = useState(false)
+
+  const toggleSleepMode = async () => {
+    setSleepingLoading(true)
+    try {
+      const res = await fetch('/api/system/sleep', { method: 'POST' })
+      if (res.ok) {
+        setIsSleeping(true)
+        await fetchSystemStatus()
+      }
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSleepingLoading(false)
+    }
+  }
+
+  const handleShutdown = async () => {
+    try {
+      await fetch('/api/system/shutdown', { method: 'POST' })
+    } catch (e) {
+      // Expected as backend stops
+    }
+    setIsShutdown(true)
+    setShutdownModalOpen(false)
+  }
 
   const chatScrollContainerRef = useRef(null)
   const latestUserMsgRef = useRef(null)
@@ -284,6 +317,10 @@ export default function App() {
     if (!text || isStreaming) return
     if (!overrideText) setPromptInput('')
 
+    if (isSleeping) {
+      setIsSleeping(false)
+    }
+
     setIsStreaming(true)
     setStreamStatus(`Running on ${selectedModel}...`)
 
@@ -443,6 +480,29 @@ export default function App() {
   const network = systemStatus?.network
   const isOfflineOnly = settings?.air_gap_mode !== false
 
+  if (isShutdown) {
+    return (
+      <div className="fixed inset-0 h-[100dvh] w-full flex flex-col items-center justify-center bg-[#0A0B0E] text-[#F3F4F6] p-6 text-center select-none">
+        <div className="h-16 w-16 rounded-2xl bg-red-500/10 border border-red-500/25 flex items-center justify-center mb-5 text-red-400">
+          <Power className="w-8 h-8" />
+        </div>
+        <h1 className="text-xl sm:text-2xl font-semibold text-white tracking-tight mb-2">
+          Local AI Studio is Offline
+        </h1>
+        <p className="text-sm text-slate-400 max-w-md leading-relaxed mb-6">
+          The local server has stopped and all VRAM and memory have been completely released.
+          You can safely close this window, or launch the desktop shortcut anytime to start it back up.
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 rounded-lg bg-white/[0.08] hover:bg-white/[0.14] text-xs font-medium text-slate-200 transition"
+        >
+          Check if Server Restarted
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-[#0A0B0E] text-[#F3F4F6] select-none overflow-hidden">
       {/* PINNED TOP HEADER BAR (Never scrolls out of view on mobile) */}
@@ -509,6 +569,36 @@ export default function App() {
                 {artifacts.length}
               </span>
             )}
+          </button>
+
+          {/* SLEEP MODE / 0 MB VRAM BUTTON */}
+          <button
+            onClick={toggleSleepMode}
+            disabled={sleepingLoading}
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
+              isSleeping
+                ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
+                : 'border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-300'
+            }`}
+            title="Sleep Mode: Evict 100% of VRAM so your GPU is totally free for games or other apps. Wakes automatically on your next prompt."
+          >
+            {sleepingLoading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+            ) : (
+              <Moon className={`w-3.5 h-3.5 ${isSleeping ? 'text-cyan-400 fill-cyan-400' : 'text-slate-400'}`} />
+            )}
+            <span className="hidden xl:inline font-medium">
+              {isSleeping ? '0 MB VRAM (Asleep)' : 'Sleep (0 VRAM)'}
+            </span>
+          </button>
+
+          {/* POWER OFF / QUIT SERVER BUTTON */}
+          <button
+            onClick={() => setShutdownModalOpen(true)}
+            className="h-9 w-9 rounded-lg border border-red-500/20 bg-red-500/10 hover:bg-red-500/25 text-red-400 flex items-center justify-center transition shrink-0"
+            title="Close Server: Cleanly terminates the backend process and releases all system resources."
+          >
+            <Power className="w-3.5 h-3.5" />
           </button>
         </div>
       </header>
@@ -793,6 +883,13 @@ export default function App() {
                 }}
                 className="rounded-xl bg-[#12151E] border border-white/[0.1] focus-within:border-[#D97757]/60 transition p-2 sm:p-2.5 space-y-2"
               >
+                {isSleeping && (
+                  <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-300">
+                    <Moon className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400 shrink-0" />
+                    <span>Sleep Mode active (0 MB VRAM in use). Type any message or press Enter to wake up.</span>
+                  </div>
+                )}
+
                 <textarea
                   rows={2}
                   value={promptInput}
@@ -1375,6 +1472,41 @@ export default function App() {
               <div className="p-3 rounded-lg bg-[#0B0D12] border border-white/[0.08] font-mono text-sm text-[#D97757] select-all tabular-nums">
                 {network.lan_url}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SHUTDOWN / POWER OFF CONFIRMATION MODAL */}
+      {shutdownModalOpen && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl p-5 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="h-10 w-10 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center shrink-0 text-red-400">
+                <Power className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-white">Stop Local AI Studio?</h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  This will shut down the local server process and completely release all GPU VRAM and system memory.
+                  You can restart it anytime using your desktop shortcut.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/[0.06]">
+              <button
+                onClick={() => setShutdownModalOpen(false)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:bg-white/[0.06] transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleShutdown}
+                className="px-3.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-xs font-medium text-white transition flex items-center gap-1.5 shadow-sm"
+              >
+                <Power className="w-3.5 h-3.5" />
+                <span>Shutdown Studio</span>
+              </button>
             </div>
           </div>
         </div>

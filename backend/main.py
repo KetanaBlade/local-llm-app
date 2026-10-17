@@ -11,10 +11,12 @@ subnets can connect, and zero external telemetry ever leaves the machine.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import ipaddress
 import json
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -261,6 +263,42 @@ async def api_flush_vram(req: FlushVramRequest = FlushVramRequest()):
         "unloaded_models": unloaded,
         "hardware": hw,
         "running_models": running,
+    }
+
+
+@app.post("/api/system/sleep")
+async def api_system_sleep():
+    """
+    Enter Sleep Mode: evict 100% of LLM and Diffusion models from GPU VRAM.
+    Returns VRAM consumption to 0 MB until the next user prompt is sent.
+    """
+    unloaded = await flush_ollama_vram()
+    settings = await get_settings()
+    hw = build_hardware_profile(override_profile=settings.get("hardware_profile_override", "auto"))
+    return {
+        "status": "sleeping",
+        "unloaded_models": unloaded,
+        "message": "All models evicted from GPU VRAM. Studio is in sleep mode (0 MB VRAM). Send any prompt to wake up automatically.",
+        "hardware": hw,
+        "running_models": [],
+    }
+
+
+@app.post("/api/system/shutdown")
+async def api_system_shutdown():
+    """
+    Gracefully terminate the backend server process and release all system handles.
+    """
+    await flush_ollama_vram()
+
+    async def _delayed_kill():
+        await asyncio.sleep(0.5)
+        os._exit(0)
+
+    asyncio.create_task(_delayed_kill())
+    return {
+        "status": "shutting_down",
+        "message": "Local AI Studio backend process is stopping cleanly. You can safely close this window.",
     }
 
 
