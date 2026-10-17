@@ -32,6 +32,8 @@ import {
   Gamepad2,
   ShieldCheck,
   Key,
+  Terminal,
+  Zap,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -58,6 +60,7 @@ export default function App() {
 
   // Default to conversational model (llama3.2:3b) rather than a coding model
   const [selectedModel, setSelectedModel] = useState('llama3.2:3b')
+  const [orchestratorMode, setOrchestratorMode] = useState(true)
   const [imageGenMode, setImageGenMode] = useState(false)
   const [imageGenStyle, setImageGenStyle] = useState('auto')
   const [promptInput, setPromptInput] = useState('')
@@ -474,7 +477,7 @@ export default function App() {
           conversation_id: activeConvId,
           prompt: text,
           model: selectedModel,
-          mode: imageGenMode ? 'image' : 'agent',
+          mode: imageGenMode ? 'image' : (orchestratorMode ? 'agent' : 'chat'),
           image_style: imageGenStyle,
           context: chatContext,
         }),
@@ -1126,6 +1129,32 @@ export default function App() {
                         <ChevronDown className="w-3.5 h-3.5 text-purple-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={() => setOrchestratorMode((v) => !v)}
+                      className={`h-9 px-2.5 rounded-lg border text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
+                        orchestratorMode
+                          ? 'border-amber-500/35 bg-amber-500/10 text-amber-300 shadow-sm shadow-amber-500/10'
+                          : 'border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-slate-400'
+                      }`}
+                      title={
+                        orchestratorMode
+                          ? '⚡ Orchestrator Mode active: Python execution, local file inspection/editing, and multi-step agent tools enabled'
+                          : '💬 Conversation Mode active: Direct conversational responses without tool execution'
+                      }
+                    >
+                      {orchestratorMode ? (
+                        <>
+                          <Zap className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Orchestrator</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-slate-400">💬 Chat</span>
+                        </>
+                      )}
+                    </button>
 
                     <button
                       type="button"
@@ -2244,10 +2273,48 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
                 </div>
               )}
 
+              {/* Backup notification pill */}
+              {tc.backup_created && (
+                <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center gap-1.5 text-[11px] text-emerald-400">
+                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span>Safe Backup created: <code className="text-slate-300 font-mono">{tc.backup_created.split(/[/\\]/).pop()}</code></span>
+                </div>
+              )}
+
+              {/* Terminal stdout / stderr for Python execution */}
+              {(tc.stdout || tc.stderr) && (
+                <div className="mt-2 pt-2 border-t border-white/[0.06] space-y-1">
+                  {tc.stdout && (
+                    <div className="rounded bg-[#080A0F] border border-white/[0.05] p-2 text-[11px] font-mono text-emerald-300/90 whitespace-pre-wrap overflow-x-auto max-h-48">
+                      {tc.stdout}
+                    </div>
+                  )}
+                  {tc.stderr && (
+                    <div className="rounded bg-red-950/20 border border-red-500/20 p-2 text-[11px] font-mono text-red-300 whitespace-pre-wrap overflow-x-auto max-h-48">
+                      {tc.stderr}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {toolsOpen && (
-                <pre className="mt-2 pt-2 border-t border-white/[0.06] text-[11px] text-slate-400 overflow-x-auto">
-                  {JSON.stringify(tc.arguments, null, 2)}
-                </pre>
+                <div className="mt-2 pt-2 border-t border-white/[0.06] space-y-1.5">
+                  {tc.arguments?.script && (
+                    <div>
+                      <div className="text-[10px] text-slate-500 font-semibold mb-1 flex items-center gap-1">
+                        <Terminal className="w-3 h-3 text-[#D97757]" />
+                        <span>SCRIPT EXECUTED:</span>
+                      </div>
+                      <pre className="p-2 rounded bg-[#090B0F] border border-white/[0.05] text-[11px] text-slate-300 overflow-x-auto whitespace-pre-wrap font-mono">
+                        {tc.arguments.script}
+                      </pre>
+                    </div>
+                  )}
+                  <div className="text-[10px] text-slate-500 font-semibold mb-1">ARGUMENTS:</div>
+                  <pre className="text-[11px] text-slate-400 overflow-x-auto font-mono">
+                    {JSON.stringify(tc.arguments, null, 2)}
+                  </pre>
+                </div>
               )}
             </div>
           ))}

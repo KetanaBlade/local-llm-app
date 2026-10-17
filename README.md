@@ -68,12 +68,13 @@ Directly runs quantized Stable Diffusion checkpoints on your local GPU via Vulka
 * **One-Click Deletion**: Safely delete unused Ollama LLMs or large diffusion checkpoints (`.safetensors`) directly from the UI to reclaim tens of gigabytes of disk space.
 * **Progress Tracking**: Real-time progress bars for Ollama pulls and direct HTTP checkpoint downloads with automatic rename handling.
 
-### 4. Autonomous Agent & Document Synthesis
-Equipped with native tool-calling capabilities that stream structured artifacts straight to the user:
-* **Excel Spreadsheets (`.xlsx`)**: Generates real spreadsheets with alternating header styles, column width auto-fitting, number formatting, and functional dynamic formulas (`=SUM()`, `=AVERAGE()`).
-* **Reports & Documents (`.pdf`, `.docx`)**: Formats clean typography reports, invoices, and executive summaries with download buttons and inline previews.
-* **Interactive Web Apps (`.html`)**: Generates standalone single-file interactive tools (calculators, simulators, dashboard widgets) rendered in a sandboxed `<iframe>`.
-* **Python Execution Sandbox**: Runs local Python scripts for computational tasks, mathematics, and data transformation within a strictly confined working directory (`confine_to_workspace()`).
+### 4. Self-Scripting Orchestrator Harness (Antigravity & Claude Code Architecture)
+Upgrades local LLMs from rigid form-fillers into autonomous system engineers equipped with universal execution primitives:
+* **Universal Primitives (`execute_python`, `read_file`, `edit_file_content`, `list_directory`)**: Rather than relying on static schema tools that can only create new files, the agent writes tailored Python scripts on the fly using pre-installed packages (`openpyxl`, `pandas`, `python-docx`, `reportlab`, `matplotlib`, `PIL`).
+* **Multi-Step ReAct Iteration Loop**: Supports up to 5 iterative execution steps per turn (`Sense -> Plan -> Act -> Observe -> Iterate`). The agent can inspect an Excel workbook, extract sheet names, write an `openpyxl` script to update cells/formulas, observe stdout/stderr, self-correct errors, and synthesize the final answer.
+* **Automatic File Backups (`.bak`)**: Before any existing file on the user's PC is modified or overwritten, the system automatically creates a timestamped safety backup (`<filename>.bak_YYYYMMDD_HHMMSS`).
+* **Universal File & Spreadsheet Reader**: Intelligently inspects files: automatically parses `.xlsx` workbooks into sheet listings and structured markdown table previews, formats CSV tables, and reads code/text with exact line numbering.
+* **Dual Execution Modes**: One-click composer toggle between **⚡ Orchestrator Mode** (full multi-step code execution & tool synthesis) and **💬 Chat Mode** (fast conversational responses with zero tool overhead).
 
 ### 5. Zero-VRAM Gaming Mode & Hardware Auto-Tuner
 * **Zero-VRAM Gaming Mode**: Offloads 100% of LLM execution to your system RAM (e.g. 64GB DDR5) so your discrete GPU (RTX 4070 SUPER) retains 100% dedicated VRAM and 0 FPS drops for modern games.

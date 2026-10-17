@@ -13,6 +13,8 @@ Provides structured local tools for:
 from __future__ import annotations
 
 import asyncio
+import csv
+from datetime import datetime
 import html
 import json
 import math
@@ -21,6 +23,7 @@ import os
 import platform
 import random
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -73,6 +76,80 @@ def confine_to_workspace(candidate: Path | str, base_dir: Path = WORKSPACE_DIR) 
         raise ValueError(f"Access denied: path is outside allowed workspace ({base_real}): {exc}")
 
     return cand_real
+
+
+RESTRICTED_SYSTEM_DIRS = [
+    Path("C:/Windows").resolve(),
+    Path("C:/Program Files").resolve(),
+    Path("C:/Program Files (x86)").resolve(),
+] if platform.system() == "Windows" else [
+    Path("/etc").resolve(),
+    Path("/bin").resolve(),
+    Path("/sbin").resolve(),
+    Path("/usr").resolve(),
+]
+
+
+def resolve_safe_path(candidate: Path | str, allow_outside_workspace: bool = True) -> Path:
+    """
+    Resolve and validate file/directory path.
+    - Resolves user home `~`
+    - Blocks NUL bytes, newlines, and illegal escape control characters
+    - If allow_outside_workspace is False, confines strictly to WORKSPACE_DIR
+    - If allow_outside_workspace is True, allows user documents, projects, and drives while blocking Windows system directories
+    """
+    raw_str = str(candidate).strip()
+    if not raw_str:
+        raise ValueError("Path cannot be empty")
+    if "\0" in raw_str or "\n" in raw_str or "\r" in raw_str:
+        raise ValueError("Invalid path: illegal control characters detected")
+
+    if raw_str.startswith("~"):
+        p = Path(raw_str).expanduser()
+    else:
+        p = Path(raw_str)
+
+    if not p.is_absolute():
+        p = (WORKSPACE_DIR / p).resolve()
+    else:
+        p = p.resolve()
+
+    if not allow_outside_workspace:
+        base_real = WORKSPACE_DIR.resolve()
+        try:
+            common = Path(os.path.commonpath([str(base_real), str(p)])).resolve()
+            if common != base_real:
+                raise ValueError(f"Path escape blocked: '{p}' is outside allowed workspace '{base_real}'")
+        except Exception as exc:
+            raise ValueError(f"Access denied: {exc}")
+
+    # Guard against OS critical system directories
+    for restricted in RESTRICTED_SYSTEM_DIRS:
+        is_restricted = False
+        try:
+            if restricted.exists() and (p == restricted or restricted in p.parents):
+                is_restricted = True
+        except Exception:
+            pass
+        if is_restricted:
+            raise PermissionError(f"Access denied: '{p}' is inside protected system directory '{restricted}'")
+
+    return p
+
+
+def create_file_backup(path: Path) -> Optional[Path]:
+    """
+    Creates an automatic timestamped backup (.bak_YYYYMMDD_HHMMSS) before file modifications.
+    """
+    try:
+        if path.exists() and path.is_file():
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = path.with_name(f"{path.name}.bak_{ts}")
+            shutil.copy2(path, backup_path)
+            return backup_path
+    except Exception:
+        pass
+    return None
 
 
 def _slugify(text: str) -> str:
@@ -1082,29 +1159,53 @@ async def tool_generate_visual_media(
     }
 
 
-async def tool_run_python_sandbox(
+async def tool_execute_python(
     script: str,
-    description: str = "Execute Python script in local sandbox",
+    description: str = "Execute Python script",
+    target_filepath: Optional[str] = None,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """
+    Antigravity-Style Universal Python Execution Primitive.
+    - Executes Python code directly with access to pre-installed libraries (openpyxl, pandas, python-docx, reportlab, matplotlib, PIL).
+    - If target_filepath is specified or referenced, creates a timestamped .bak backup prior to modification.
+    - Captures stdout, stderr, return codes, and registers any created/modified artifacts.
+    """
+    bak_path = None
+    target_path = None
+    if target_filepath and str(target_filepath).strip():
+        try:
+            target_path = resolve_safe_path(target_filepath, allow_outside_workspace=True)
+            if target_path.exists() and target_path.is_file():
+                bak_path = create_file_backup(target_path)
+        except Exception:
+            pass
+
     before_files = {p.name: p.stat().st_mtime for p in ARTIFACTS_DIR.iterdir() if p.is_file()}
-    script_file = confine_to_workspace(ARTIFACTS_DIR / f"_sandbox_exec_{int(time.time() * 1000)}.py")
+    script_file = ARTIFACTS_DIR / f"_orchestrator_exec_{int(time.time() * 1000)}.py"
     script_file.write_text(script, encoding="utf-8")
+
+    cwd_dir = target_path.parent if (target_path and target_path.parent.exists()) else WORKSPACE_DIR
 
     start_t = time.time()
     try:
         proc = subprocess.run(
             [sys.executable, str(script_file)],
-            cwd=str(ARTIFACTS_DIR),
+            cwd=str(cwd_dir),
             capture_output=True,
             text=True,
-            timeout=30.0,
+            timeout=45.0,
             creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
         )
         duration_ms = int((time.time() - start_t) * 1000)
         stdout = proc.stdout.strip()
         stderr = proc.stderr.strip()
         returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        duration_ms = 45000
+        stdout = ""
+        stderr = "Execution timed out after 45 seconds."
+        returncode = 124
     except Exception as exc:
         duration_ms = int((time.time() - start_t) * 1000)
         stdout = ""
@@ -1116,12 +1217,14 @@ async def tool_run_python_sandbox(
 
     created_artifacts = []
     for p in ARTIFACTS_DIR.iterdir():
-        if not p.is_file() or p.name.startswith("_sandbox_exec_") or p.name == ".gitkeep":
+        if not p.is_file() or p.name.startswith("_orchestrator_exec_") or p.name.startswith("_sandbox_exec_") or p.name == ".gitkeep":
             continue
         if p.name not in before_files or p.stat().st_mtime > before_files[p.name]:
             ext = p.suffix.lower()
             mime, _ = mimetypes.guess_type(p.name)
             mime = mime or "application/octet-stream"
+            category = "file"
+            preview = {}
             if ext in (".xlsx", ".xls", ".csv"):
                 category = "spreadsheet"
                 preview = extract_excel_preview(p) if ext == ".xlsx" else {}
@@ -1130,16 +1233,13 @@ async def tool_run_python_sandbox(
                 preview = {"format": ext.lstrip(".")}
             elif ext in (".png", ".jpg", ".jpeg", ".svg", ".webp"):
                 category = "image"
-                preview = {"engine": "Python Sandbox"}
+                preview = {"engine": "Python Orchestrator"}
             elif ext in (".gif", ".mp4", ".webm"):
                 category = "video"
-                preview = {"engine": "Python Sandbox"}
+                preview = {"engine": "Python Orchestrator"}
             elif ext in (".html", ".htm"):
                 category = "webapp"
                 preview = {"code_snippet": p.read_text(encoding="utf-8", errors="ignore")[:1500]}
-            else:
-                category = "file"
-                preview = {}
 
             art = await register_artifact(
                 title=p.stem.replace("_", " ").title(),
@@ -1152,18 +1252,388 @@ async def tool_run_python_sandbox(
             )
             created_artifacts.append(art)
 
+    summary_items = []
+    if returncode == 0:
+        summary_items.append(f"Python script succeeded in {duration_ms}ms")
+    else:
+        summary_items.append(f"Python script exited with code {returncode}")
+    if bak_path:
+        summary_items.append(f"• Backup created at '{bak_path.name}'")
+    if created_artifacts:
+        summary_items.append(f"• Generated {len(created_artifacts)} artifact(s)")
+
     return {
         "status": "success" if returncode == 0 else "error",
         "returncode": returncode,
         "duration_ms": duration_ms,
-        "stdout": stdout[:4000],
-        "stderr": stderr[:2000],
+        "stdout": stdout[:6000],
+        "stderr": stderr[:3000],
+        "backup_created": str(bak_path) if bak_path else None,
         "artifacts": created_artifacts,
+        "summary": " ".join(summary_items),
+    }
+
+
+async def tool_run_python_sandbox(
+    script: str,
+    description: str = "Execute Python script in local sandbox",
+    conversation_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Legacy alias for tool_execute_python."""
+    return await tool_execute_python(script=script, description=description, conversation_id=conversation_id)
+
+
+async def tool_read_file(
+    filepath: str,
+    start_line: int = 1,
+    max_lines: int = 250,
+) -> Dict[str, Any]:
+    """
+    Antigravity-Style Universal File Reader.
+    - Supports reading local code, text, JSON, and markdown files with line numbering.
+    - Automatically parses Excel (.xlsx) workbooks into structured markdown tables and sheet listings.
+    - Formats CSV files into structured table previews.
+    """
+    try:
+        target = resolve_safe_path(filepath, allow_outside_workspace=True)
+    except Exception as exc:
+        return {"status": "error", "summary": str(exc), "content": ""}
+
+    if not target.exists():
+        return {"status": "error", "summary": f"File not found: '{filepath}'", "content": ""}
+
+    if target.is_dir():
+        return await tool_list_directory(directory_path=str(target))
+
+    ext = target.suffix.lower()
+
+    # 1. Excel Workbook (.xlsx / .xlsm)
+    if ext in (".xlsx", ".xlsm"):
+        try:
+            wb = openpyxl.load_workbook(target, data_only=True, read_only=True)
+            sheet_names = wb.sheetnames
+            active_sheet = sheet_names[0] if sheet_names else "Sheet1"
+            ws = wb[active_sheet]
+
+            rows_data = []
+            for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+                if r_idx > 35:
+                    break
+                rows_data.append([str(v if v is not None else "") for v in row[:15]])
+            wb.close()
+
+            lines = [
+                f"# Excel Workbook: {target.name}",
+                f"- **Sheets in Workbook**: {', '.join(sheet_names)}",
+                f"- **Active Sheet Previewed**: `{active_sheet}` (first {len(rows_data)} rows)",
+                "",
+            ]
+            if rows_data:
+                headers = rows_data[0]
+                lines.append("| " + " | ".join(headers) + " |")
+                lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+                for r in rows_data[1:]:
+                    lines.append("| " + " | ".join(r) + " |")
+            else:
+                lines.append("*(Sheet is empty)*")
+
+            table_content = "\n".join(lines)
+            return {
+                "status": "success",
+                "file_type": "excel",
+                "sheets": sheet_names,
+                "summary": f"Read Excel file '{target.name}' ({len(sheet_names)} sheets: {', '.join(sheet_names)}).",
+                "content": table_content,
+            }
+        except Exception as exc:
+            return {"status": "error", "summary": f"Failed reading Excel file: {exc}", "content": ""}
+
+    # 2. CSV Table
+    if ext == ".csv":
+        try:
+            lines = [f"# CSV File: {target.name}", ""]
+            with open(target, mode="r", encoding="utf-8", errors="replace") as f:
+                reader = csv.reader(f)
+                rows = [row for _, row in zip(range(40), reader)]
+            if rows:
+                lines.append("| " + " | ".join(rows[0]) + " |")
+                lines.append("| " + " | ".join(["---"] * len(rows[0])) + " |")
+                for r in rows[1:]:
+                    lines.append("| " + " | ".join(r) + " |")
+            return {
+                "status": "success",
+                "file_type": "csv",
+                "summary": f"Read CSV table '{target.name}' ({len(rows)} preview rows).",
+                "content": "\n".join(lines),
+            }
+        except Exception as exc:
+            return {"status": "error", "summary": f"Failed reading CSV: {exc}", "content": ""}
+
+    # 3. Standard Text / Code / JSON / Markdown
+    try:
+        content_bytes = target.read_bytes()
+        if len(content_bytes) > 5 * 1024 * 1024:
+            return {
+                "status": "error",
+                "summary": f"File '{target.name}' is too large ({len(content_bytes)//1024} KB) to read directly into context.",
+                "content": "",
+            }
+
+        try:
+            text = content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content_bytes.decode("latin-1", errors="replace")
+
+        all_lines = text.splitlines()
+        total_lines = len(all_lines)
+        start_idx = max(1, start_line) - 1
+        end_idx = min(total_lines, start_idx + max_lines)
+        slice_lines = all_lines[start_idx:end_idx]
+
+        numbered = [f"{start_idx + i + 1:4d} | {line}" for i, line in enumerate(slice_lines)]
+        summary = f"Read lines {start_idx + 1} to {end_idx} of {total_lines} from '{target.name}'."
+        return {
+            "status": "success",
+            "file_type": ext.lstrip(".") or "text",
+            "total_lines": total_lines,
+            "lines_shown": len(slice_lines),
+            "summary": summary,
+            "content": "\n".join(numbered),
+        }
+    except Exception as exc:
+        return {"status": "error", "summary": f"Failed reading file '{target.name}': {exc}", "content": ""}
+
+
+async def tool_list_directory(
+    directory_path: str = ".",
+    max_entries: int = 100,
+) -> Dict[str, Any]:
+    """
+    Antigravity-Style Directory Explorer.
+    Lists files, directories, sizes, and file types inside any allowed local folder.
+    """
+    try:
+        target = resolve_safe_path(directory_path, allow_outside_workspace=True)
+    except Exception as exc:
+        return {"status": "error", "summary": str(exc), "entries": []}
+
+    if not target.exists():
+        return {"status": "error", "summary": f"Directory not found: '{directory_path}'", "entries": []}
+    if not target.is_dir():
+        return {"status": "error", "summary": f"Path '{directory_path}' is a file, not a directory. Use read_file instead.", "entries": []}
+
+    entries = []
+    try:
+        items = sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))[:max_entries]
+        table_lines = [
+            f"# Directory: {target}",
+            f"Total items shown: {len(items)}",
+            "",
+            "| Name | Type | Size |",
+            "| --- | --- | --- |",
+        ]
+        for it in items:
+            kind = "Folder" if it.is_dir() else "File"
+            size_str = ""
+            if it.is_file():
+                sz = it.stat().st_size
+                if sz < 1024:
+                    size_str = f"{sz} B"
+                elif sz < 1024 * 1024:
+                    size_str = f"{sz/1024:.1f} KB"
+                else:
+                    size_str = f"{sz/(1024*1024):.1f} MB"
+            entries.append({"name": it.name, "type": kind, "size": size_str, "path": str(it)})
+            table_lines.append(f"| {it.name} | {kind} | {size_str or '-'} |")
+
+        return {
+            "status": "success",
+            "directory": str(target),
+            "count": len(entries),
+            "summary": f"Listed {len(entries)} item(s) in '{target.name or target}'.",
+            "content": "\n".join(table_lines),
+            "entries": entries,
+        }
+    except Exception as exc:
+        return {"status": "error", "summary": f"Failed listing directory: {exc}", "entries": []}
+
+
+async def tool_edit_file_content(
+    filepath: str,
+    target_content: str,
+    replacement_content: str,
+) -> Dict[str, Any]:
+    """
+    Antigravity-Style Surgical Text / Code File Editor.
+    Replaces an exact block of target content with replacement content, creating a .bak copy first.
+    """
+    try:
+        target = resolve_safe_path(filepath, allow_outside_workspace=True)
+    except Exception as exc:
+        return {"status": "error", "summary": str(exc)}
+
+    if not target.exists() or not target.is_file():
+        return {"status": "error", "summary": f"Target file not found: '{filepath}'"}
+
+    try:
+        raw_text = target.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            raw_text = target.read_text(encoding="latin-1")
+        except Exception as exc:
+            return {"status": "error", "summary": f"Cannot decode file as text: {exc}"}
+
+    if target_content not in raw_text:
+        return {
+            "status": "error",
+            "summary": "Target content not found in file. Make sure whitespace, indentation, and lines match exactly.",
+        }
+
+    bak_path = create_file_backup(target)
+    new_text = raw_text.replace(target_content, replacement_content, 1)
+    target.write_text(new_text, encoding="utf-8")
+
+    return {
+        "status": "success",
+        "summary": f"Successfully updated '{target.name}'.",
+        "backup_path": str(bak_path) if bak_path else None,
+        "detail": f"File edited successfully. Backup saved at: {bak_path.name if bak_path else 'none'}",
     }
 
 
 def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
     schemas = [
+        {
+            "type": "function",
+            "function": {
+                "name": "execute_python",
+                "description": (
+                    "Execute Python 3 code directly on the user's computer. "
+                    "Use installed packages (openpyxl for Excel, pandas for dataframes, python-docx for Word, "
+                    "reportlab for PDF, PIL for images, pathlib/os for files). "
+                    "Target files modified will automatically have a .bak backup created by the system."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Python 3 code to execute.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Short explanation of what the script accomplishes.",
+                        },
+                        "target_filepath": {
+                            "type": "string",
+                            "description": "Optional file path being inspected or modified, so the system creates an automatic .bak backup.",
+                        },
+                    },
+                    "required": ["script", "description"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": (
+                    "Read the contents of a local file on the computer. "
+                    "Supports code, text, JSON, and markdown with line numbers. "
+                    "For Excel (.xlsx) workbooks and CSV files, automatically returns sheet listings and data table previews."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filepath": {
+                            "type": "string",
+                            "description": "Local path of the file to inspect (e.g. C:\\Users\\...\\budget.xlsx).",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Starting line number for text files (1-indexed, default 1).",
+                        },
+                        "max_lines": {
+                            "type": "integer",
+                            "description": "Maximum number of lines to return (default 250).",
+                        },
+                    },
+                    "required": ["filepath"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file_content",
+                "description": (
+                    "Surgically edit a text, code, or configuration file by replacing an exact block of target content "
+                    "with replacement content. Automatically creates a timestamped .bak backup."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filepath": {
+                            "type": "string",
+                            "description": "Path to the file to edit.",
+                        },
+                        "target_content": {
+                            "type": "string",
+                            "description": "The exact existing text block to find and replace.",
+                        },
+                        "replacement_content": {
+                            "type": "string",
+                            "description": "The new replacement text to insert.",
+                        },
+                    },
+                    "required": ["filepath", "target_content", "replacement_content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_directory",
+                "description": "List files, subdirectories, and sizes in a local folder on the user's computer.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "directory_path": {
+                            "type": "string",
+                            "description": "Path of the directory to list (defaults to current workspace).",
+                        },
+                        "max_entries": {
+                            "type": "integer",
+                            "description": "Maximum number of items to return (default 100).",
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_visual_media",
+                "description": (
+                    "Generate a photorealistic or artistic AI picture/image (media_type='image'), "
+                    "a data chart (media_type='chart'), or an animation (media_type='video')."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "Detailed visual prompt for the image or chart title"},
+                        "media_type": {"type": "string", "enum": ["image", "video", "chart"]},
+                        "style": {
+                            "type": "string",
+                            "enum": ["auto", "photorealistic", "artistic", "anime"],
+                            "description": "Visual aesthetic style: 'photorealistic' for real-life camera photos, 'anime' for Japanese anime/manga art, 'artistic' for fantasy/concept art/illustrations, or 'auto' to infer from prompt",
+                        },
+                        "chart_data": {"type": "object"},
+                    },
+                    "required": ["prompt", "media_type"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {
@@ -1234,45 +1704,6 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                         "html_code": {"type": "string"},
                     },
                     "required": ["title", "html_code"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "generate_visual_media",
-                "description": (
-                    "Generate a photorealistic or artistic AI picture/image (media_type='image'), "
-                    "a data chart (media_type='chart'), or an animation (media_type='video')."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prompt": {"type": "string", "description": "Detailed visual prompt for the image or chart title"},
-                        "media_type": {"type": "string", "enum": ["image", "video", "chart"]},
-                        "style": {
-                            "type": "string",
-                            "enum": ["auto", "photorealistic", "artistic", "anime"],
-                            "description": "Visual aesthetic style: 'photorealistic' for real-life camera photos, 'anime' for Japanese anime/manga art, 'artistic' for fantasy/concept art/illustrations, or 'auto' to infer from prompt",
-                        },
-                        "chart_data": {"type": "object"},
-                    },
-                    "required": ["prompt", "media_type"],
-                },
-            },
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "run_python_sandbox",
-                "description": "Run a custom Python 3 script locally for calculations or file creation.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "description": {"type": "string"},
-                        "script": {"type": "string"},
-                    },
-                    "required": ["description", "script"],
                 },
             },
         },
