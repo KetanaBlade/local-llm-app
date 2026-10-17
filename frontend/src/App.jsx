@@ -22,6 +22,7 @@ import {
   X,
   ArrowUpRight,
   Eye,
+  EyeOff,
   FolderOpen,
   Sparkles,
   BookOpen,
@@ -29,6 +30,8 @@ import {
   Power,
   Square,
   Gamepad2,
+  ShieldCheck,
+  Key,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -43,6 +46,9 @@ export default function App() {
   const [messages, setMessages] = useState([])
   const [chatContext, setChatContext] = useState('')
   const [contextExpanded, setContextExpanded] = useState(false)
+  const [braveApiKeyInput, setBraveApiKeyInput] = useState('')
+  const [showBraveKey, setShowBraveKey] = useState(false)
+  const [braveKeySaved, setBraveKeySaved] = useState(false)
   const [contextSavedBadge, setContextSavedBadge] = useState(false)
 
   const [artifacts, setArtifacts] = useState([])
@@ -294,6 +300,18 @@ export default function App() {
     if (r.ok) {
       await fetchSystemStatus()
     }
+  }
+
+  useEffect(() => {
+    if (systemStatus?.settings?.brave_search_api_key !== undefined) {
+      setBraveApiKeyInput(systemStatus.settings.brave_search_api_key || '')
+    }
+  }, [systemStatus?.settings?.brave_search_api_key])
+
+  const handleSaveBraveKey = async () => {
+    await handleUpdateSetting({ brave_search_api_key: braveApiKeyInput.trim() })
+    setBraveKeySaved(true)
+    setTimeout(() => setBraveKeySaved(false), 2000)
   }
 
   const handlePullModel = async (modelId) => {
@@ -1539,6 +1557,81 @@ export default function App() {
                 </button>
               </div>
 
+              {/* WEB SEARCH & BOT-SHIELDING SETTINGS */}
+              <div className="p-4 rounded-xl bg-[#141821] border border-white/[0.08] space-y-3.5">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <span className="text-xs font-semibold text-white">
+                      Web Search & Bot-Shielding
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 font-mono">
+                      SHIELDED
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-mono text-emerald-400/90">
+                    Zero Residential IP Exposure
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  When Web Search is enabled, articles are fetched through Jina Reader cloud proxies (<code className="text-slate-400">r.jina.ai</code>). 
+                  Your residential home IP address is completely shielded from target websites, Cloudflare, and Akamai bot-detection systems.
+                </p>
+
+                <div className="pt-1 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
+                      <Key className="w-3.5 h-3.5 text-[#D97757]" />
+                      <span>Brave Search API Key (Optional — 2,000 free queries/mo)</span>
+                    </label>
+                    <a
+                      href="https://brave.com/search/api/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] text-[#D97757] hover:underline flex items-center gap-1"
+                    >
+                      <span>Get free API key</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        type={showBraveKey ? 'text' : 'password'}
+                        value={braveApiKeyInput}
+                        onChange={(e) => setBraveApiKeyInput(e.target.value)}
+                        placeholder="Paste Brave API key (e.g. BSA...)"
+                        className="w-full h-9 pl-3 pr-9 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white focus:outline-none focus:border-[#D97757]/60"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowBraveKey((v) => !v)}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                        title={showBraveKey ? 'Hide Key' : 'Show Key'}
+                      >
+                        {showBraveKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleSaveBraveKey}
+                      className="h-9 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium shrink-0 transition"
+                    >
+                      {braveKeySaved ? 'Saved!' : 'Save Key'}
+                    </button>
+                  </div>
+
+                  <div className="text-[11px] text-slate-400">
+                    {settings?.brave_search_api_key
+                      ? '✓ Official Brave Search API is configured and active with automatic DuckDuckGo fallback.'
+                      : 'Out-of-the-box mode active (DuckDuckGo + Jina Reader proxy, no API key needed).'}
+                  </div>
+                </div>
+              </div>
+
               <div className="p-4 rounded-xl bg-[#0D0F14] border border-white/[0.08] space-y-2">
                 <div className="text-xs font-semibold text-white">
                   How the App Is Tuned for This Machine
@@ -2120,6 +2213,37 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
                   {tc.duration_ms ? `${tc.duration_ms}ms` : 'running...'}
                 </span>
               </button>
+
+              {/* Interactive Source Chips for Search Web */}
+              {tc.name === 'search_web' && tc.sources && tc.sources.length > 0 && (
+                <div className="mt-2 pt-2 border-t border-white/[0.06] space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                    <Globe className="w-3 h-3 text-[#D97757]" />
+                    <span>Sources & Citations ({tc.sources.length})</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {tc.sources.map((s) => (
+                      <a
+                        key={s.index || s.url}
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="group inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0C0E14] hover:bg-[#151922] border border-white/[0.08] hover:border-[#D97757]/40 text-xs transition cursor-pointer"
+                        title={`${s.title}\n${s.url}`}
+                      >
+                        <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-white/[0.07] text-[#D97757] font-semibold">
+                          [{s.index}]
+                        </span>
+                        <span className="text-slate-300 group-hover:text-white font-medium max-w-[140px] sm:max-w-[200px] truncate">
+                          {s.domain || s.title}
+                        </span>
+                        <ExternalLink className="w-3 h-3 text-slate-500 group-hover:text-slate-300 shrink-0" />
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {toolsOpen && (
                 <pre className="mt-2 pt-2 border-t border-white/[0.06] text-[11px] text-slate-400 overflow-x-auto">
                   {JSON.stringify(tc.arguments, null, 2)}

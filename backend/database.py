@@ -99,6 +99,7 @@ async def init_db() -> None:
             "agent_mode": "antigravity",
             "auto_vram_handoff": "true",
             "gaming_mode": "false",
+            "brave_search_api_key": "",
         }
         for k, v in defaults.items():
             await db.execute(
@@ -121,6 +122,7 @@ async def get_settings() -> Dict[str, Any]:
             "agent_mode": raw.get("agent_mode", "antigravity"),
             "auto_vram_handoff": raw.get("auto_vram_handoff", "true") == "true",
             "gaming_mode": raw.get("gaming_mode", "false") == "true",
+            "brave_search_api_key": raw.get("brave_search_api_key", ""),
         }
 
 

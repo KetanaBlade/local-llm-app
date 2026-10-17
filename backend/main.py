@@ -158,6 +158,7 @@ class SettingsUpdateRequest(BaseModel):
     agent_mode: Optional[str] = None
     auto_vram_handoff: Optional[bool] = None
     gaming_mode: Optional[bool] = None
+    brave_search_api_key: Optional[str] = None
 
 
 class DirectToolRequest(BaseModel):
@@ -504,6 +505,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             chat_context=active_context,
             gaming_mode=settings.get("gaming_mode", False),
             image_style=req.image_style or "auto",
+            brave_api_key=settings.get("brave_search_api_key", ""),
         ):
             if await request.is_disconnected():
                 await flush_ollama_vram()
@@ -545,6 +547,7 @@ async def api_direct_tool_execute(req: DirectToolRequest):
         active_model=settings.get("default_model", ""),
         vram_handoff=settings.get("auto_vram_handoff", True),
         offline_mode=settings.get("air_gap_mode", True),
+        brave_api_key=settings.get("brave_search_api_key", ""),
     )
     return res
 

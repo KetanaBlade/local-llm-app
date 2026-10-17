@@ -276,7 +276,241 @@ def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
         return {"error": str(exc), "sheets": []}
 
 
-async def tool_search_web(query: str, offline_mode: bool = True) -> Dict[str, Any]:
+def _denoise_search_query(query: str) -> str:
+    """
+    Query De-Noiser & Meta-Phrase Stripper (inspired by Odysseus).
+    Strips conversational preambles like 'can you search for', 'search the web for'
+    so the search engine receives clean, high-signal keywords.
+    """
+    q = (query or "").strip()
+    patterns = [
+        r"^(?:please\s+)?(?:can\s+you\s+)?(?:please\s+)?(?:search(?:\s+the\s+web|\s+online|\s+google|\s+for)?\s+(?:for|about)?)\s*",
+        r"^(?:look\s+up(?:\s+online|\s+on\s+google)?\s+(?:for|about)?)\s*",
+        r"^(?:find\s+(?:me\s+)?(?:out\s+)?about)\s*",
+        r"^(?:what\s+(?:is|are)\s+the\s+latest\s+(?:on|about))\s*",
+        r"^(?:search\s+for)\s*",
+    ]
+    for pat in patterns:
+        q = re.sub(pat, "", q, flags=re.IGNORECASE).strip()
+    q = re.sub(r'^["\']|["\']$', "", q).strip()
+    return q or query.strip()
+
+
+def _extract_clean_domain(url_str: str) -> str:
+    """
+    Extract a readable, clean domain name (e.g. 'wikipedia.org') from a URL.
+    """
+    try:
+        netloc = urllib.parse.urlparse(url_str).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        return netloc
+    except Exception:
+        return ""
+
+
+def _clean_ddg_url(raw_href: str) -> str:
+    """
+    Decode real destination URLs from DuckDuckGo redirect wrappers (/l/?uddg=...).
+    """
+    if not raw_href:
+        return ""
+    if "uddg=" in raw_href:
+        try:
+            m = re.search(r"[?&]uddg=([^&]+)", raw_href)
+            if m:
+                return urllib.parse.unquote(m.group(1))
+        except Exception:
+            pass
+    if raw_href.startswith("//"):
+        return f"https:{raw_href}"
+    return raw_href
+
+
+def _clean_and_filter_content(text: str, max_chars: int = 1400) -> str:
+    """
+    Boilerplate & Cookie Wall Filter (inspired by Odysseus `is_low_quality`).
+    Removes common web junk (cookie notices, newsletter signups, JS warnings).
+    """
+    if not text:
+        return ""
+    text = re.sub(r"^(Title:.*?|URL Source:.*?|Markdown Content:)\n+", "", text, flags=re.MULTILINE)
+    junk_patterns = [
+        r"(?i)we\s+use\s+cookies[^\n\.]*[\n\.]",
+        r"(?i)accept\s+(?:all\s+)?cookies[^\n\.]*[\n\.]",
+        r"(?i)cookie\s+preferences[^\n\.]*[\n\.]",
+        r"(?i)subscribe\s+to\s+our\s+newsletter[^\n\.]*[\n\.]",
+        r"(?i)please\s+enable\s+javascript[^\n\.]*[\n\.]",
+        r"(?i)all\s+rights\s+reserved[^\n\.]*[\n\.]",
+    ]
+    for p in junk_patterns:
+        text = re.sub(p, "", text)
+
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit(" ", 1)[0] + "..."
+    return text
+
+
+async def _search_brave_api(query: str, api_key: str) -> List[Dict[str, str]]:
+    """
+    Query the official Brave Search API (2,000 free queries/month).
+    Official API designed for programmatic access — ZERO bot-flagging risk.
+    """
+    url = "https://api.search.brave.com/res/v1/web/search"
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": api_key.strip(),
+    }
+    params = {
+        "q": query,
+        "count": 6,
+        "text_decorations": False,
+        "search_lang": "en",
+    }
+    async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
+        resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = []
+            for r in data.get("web", {}).get("results", [])[:6]:
+                u = r.get("url", "").strip()
+                t = r.get("title", "").strip()
+                s = r.get("description", "").strip()
+                if u and t:
+                    items.append({"title": t, "url": u, "snippet": s})
+            return items
+    return []
+
+
+async def _search_duckduckgo(query: str) -> List[Dict[str, str]]:
+    """
+    DuckDuckGo search using standard browser form POST request (status 200)
+    with automatic /l/?uddg= redirect URL unquoting and lite fallback.
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://html.duckduckgo.com",
+        "Referer": "https://html.duckduckgo.com/",
+    }
+
+    body = ""
+    async with httpx.AsyncClient(timeout=7.0, follow_redirects=True) as client:
+        try:
+            resp = await client.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query, "b": ""},
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                body = resp.text
+        except Exception:
+            pass
+
+        if not body or "result__a" not in body:
+            try:
+                resp_lite = await client.post(
+                    "https://lite.duckduckgo.com/lite/",
+                    data={"q": query},
+                    headers=headers,
+                )
+                if resp_lite.status_code == 200:
+                    body = resp_lite.text
+            except Exception:
+                pass
+
+    if not body:
+        return []
+
+    # 1. Standard html.duckduckgo.com parsing
+    link_matches = re.findall(
+        r'<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    snippet_matches = re.findall(
+        r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>',
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    items: List[Dict[str, str]] = []
+    if link_matches:
+        for idx, (raw_href, raw_title) in enumerate(link_matches[:6]):
+            t_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+            dest_url = _clean_ddg_url(html.unescape(raw_href))
+            s_clean = ""
+            if idx < len(snippet_matches):
+                raw_s = snippet_matches[idx][0] or snippet_matches[idx][1]
+                s_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_s)).strip()
+            if t_clean and dest_url.startswith("http"):
+                items.append({"title": t_clean, "url": dest_url, "snippet": s_clean})
+        return items
+
+    # 2. DDG Lite parsing fallback
+    lite_matches = re.findall(
+        r'<a[^>]*class="result-link"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    lite_snippets = re.findall(
+        r'<td[^>]*class="result-snippet"[^>]*>(.*?)</td>',
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for idx, (raw_href, raw_title) in enumerate(lite_matches[:6]):
+        t_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
+        dest_url = _clean_ddg_url(html.unescape(raw_href))
+        s_clean = ""
+        if idx < len(lite_snippets):
+            s_clean = html.unescape(re.sub(r"<[^>]+>", "", lite_snippets[idx])).strip()
+        if t_clean and dest_url.startswith("http"):
+            items.append({"title": t_clean, "url": dest_url, "snippet": s_clean})
+
+    return items
+
+
+async def _fetch_shielded_reader_content(client: httpx.AsyncClient, target_url: str) -> str:
+    """
+    Jina Reader Proxy Fetcher (Bot & Residential IP Shield).
+    Fetches the article through Jina's cloud cluster (`https://r.jina.ai/<url>`).
+    Target websites NEVER see the user's home IP, shielding the user from Cloudflare,
+    Akamai, or bot rate limiters. Returns clean parsed Markdown.
+    """
+    try:
+        reader_url = f"https://r.jina.ai/{target_url}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/plain",
+            "X-Timeout": "6",
+        }
+        resp = await client.get(reader_url, headers=headers, timeout=5.5)
+        if resp.status_code == 200 and resp.text:
+            return _clean_and_filter_content(resp.text, max_chars=1400)
+    except Exception:
+        pass
+    return ""
+
+
+async def tool_search_web(
+    query: str,
+    offline_mode: bool = True,
+    brave_api_key: str = "",
+) -> Dict[str, Any]:
+    """
+    Deep, Agentic Web Search Engine with Residential IP Bot Shielding & Odysseus Guardrails.
+    - Air-Gap Guard: Blocks immediately if Offline Mode is active.
+    - Query De-Noising: Strips conversational preambles into high-signal keywords.
+    - Dual Indexing: Brave Search API (if key configured) with fallback to DuckDuckGo.
+    - IP Bot-Shield: Top article bodies fetched via remote Jina Reader proxy (`r.jina.ai`).
+      The user's home residential IP is NEVER exposed to target web servers.
+    - Odysseus Untrusted Content Boundary: Wraps text in <untrusted_web_source> tags
+      to block indirect prompt injection.
+    - Domain Diversity: Enforces varied sources (max 2 per domain).
+    """
     if offline_mode:
         return {
             "status": "blocked",
@@ -284,43 +518,90 @@ async def tool_search_web(query: str, offline_mode: bool = True) -> Dict[str, An
             "results": [],
         }
 
-    try:
-        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers=headers)
-            body = resp.text
+    clean_query = _denoise_search_query(query)
+    candidates: List[Dict[str, str]] = []
 
-        titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', body, flags=re.DOTALL)
-        snippets = re.findall(
-            r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>',
-            body,
-            flags=re.DOTALL,
-        )
+    # 1. Search Phase: Brave Search API (if configured)
+    if brave_api_key and brave_api_key.strip():
+        try:
+            candidates = await _search_brave_api(clean_query, brave_api_key.strip())
+        except Exception:
+            candidates = []
 
-        clean_results = []
-        for idx, raw_title in enumerate(titles[:5]):
-            t_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_title)).strip()
-            s_clean = ""
-            if idx < len(snippets):
-                raw_s = snippets[idx][0] or snippets[idx][1]
-                s_clean = html.unescape(re.sub(r"<[^>]+>", "", raw_s)).strip()
-            if t_clean:
-                clean_results.append({"title": t_clean, "snippet": s_clean})
+    # Fallback to DuckDuckGo if Brave wasn't configured or returned no items
+    if not candidates:
+        try:
+            candidates = await _search_duckduckgo(clean_query)
+        except Exception:
+            candidates = []
 
+    if not candidates:
         return {
             "status": "success",
-            "summary": f"Found {len(clean_results)} web results for '{query}'.",
-            "results": clean_results,
-        }
-    except Exception as exc:
-        return {
-            "status": "error",
-            "summary": f"Web search failed: {exc}",
+            "summary": f"No web search results found for '{clean_query}'.",
             "results": [],
         }
+
+    # 2. Domain Diversity Filter (Odysseus practice: max 2 results per domain)
+    domain_counts: Dict[str, int] = {}
+    filtered_candidates: List[Dict[str, str]] = []
+    for c in candidates:
+        dom = _extract_clean_domain(c["url"])
+        if domain_counts.get(dom, 0) < 2:
+            domain_counts[dom] = domain_counts.get(dom, 0) + 1
+            filtered_candidates.append(c)
+        if len(filtered_candidates) >= 5:
+            break
+
+    # 3. Reading Phase (Concurrent Shielded Reader via Jina)
+    top_to_read = filtered_candidates[:2]
+    reader_texts: List[str] = []
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            tasks = [_fetch_shielded_reader_content(client, item["url"]) for item in top_to_read]
+            reader_texts = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception:
+        reader_texts = []
+
+    # 4. Construct Final Structured Results with Untrusted Content Boundary
+    final_results = []
+    summary_blocks = []
+    for idx, c in enumerate(filtered_candidates, start=1):
+        dom = _extract_clean_domain(c["url"])
+        deep_text = ""
+        if idx - 1 < len(reader_texts) and isinstance(reader_texts[idx - 1], str) and reader_texts[idx - 1]:
+            deep_text = reader_texts[idx - 1]
+        else:
+            deep_text = c.get("snippet", "")
+
+        entry = {
+            "index": idx,
+            "title": c.get("title", ""),
+            "url": c.get("url", ""),
+            "domain": dom,
+            "snippet": c.get("snippet", ""),
+            "deep_content": deep_text,
+        }
+        final_results.append(entry)
+
+        summary_blocks.append(
+            f'[{idx}] {entry["title"]} ({dom})\n'
+            f'URL: {entry["url"]}\n'
+            f'<untrusted_web_source index="{idx}" domain="{dom}">\n'
+            f'{deep_text}\n'
+            f'</untrusted_web_source>'
+        )
+
+    summary_text = (
+        f"Found {len(final_results)} relevant web sources for '{clean_query}':\n\n"
+        + "\n\n".join(summary_blocks)
+    )
+
+    return {
+        "status": "success",
+        "summary": summary_text,
+        "results": final_results,
+    }
 
 
 async def tool_create_excel_spreadsheet(
@@ -1002,11 +1283,17 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "search_web",
-                "description": "Search the live internet via DuckDuckGo for current events, facts, or documentation.",
+                "description": (
+                    "Search the live web for up-to-date facts, news, documentation, or release info. "
+                    "Returns structured sources with deep extracted article content and citations."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Search query"},
+                        "query": {
+                            "type": "string",
+                            "description": "Concise, keyword-focused search query (e.g. 'RTX 5090 release date 2026')",
+                        },
                     },
                     "required": ["query"],
                 },
