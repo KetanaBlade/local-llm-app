@@ -396,14 +396,19 @@ async def tool_build_interactive_app(
 
 
 async def _evict_ollama_vram_if_needed(model: str, vram_handoff: bool) -> bool:
-    if not vram_handoff or not model:
+    if not vram_handoff:
         return False
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            await client.post(
-                "http://127.0.0.1:11434/api/generate",
-                json={"model": model, "keep_alive": 0},
-            )
+            ps_resp = await client.get("http://127.0.0.1:11434/api/ps")
+            loaded = [m.get("name") for m in ps_resp.json().get("models", []) if m.get("name")]
+            if model and model not in loaded:
+                loaded.append(model)
+            for m_name in loaded:
+                await client.post(
+                    "http://127.0.0.1:11434/api/generate",
+                    json={"model": m_name, "keep_alive": 0},
+                )
         return True
     except Exception:
         return False

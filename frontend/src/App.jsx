@@ -61,10 +61,11 @@ export default function App() {
   const [modelModalOpen, setModelModalOpen] = useState(false)
   const [mobileModalOpen, setMobileModalOpen] = useState(false)
 
-  // Model download state
+  // Model download & VRAM flush state
   const [pullingModel, setPullingModel] = useState(null)
   const [pullProgress, setPullProgress] = useState(null)
   const [customModelName, setCustomModelName] = useState('')
+  const [flushingVram, setFlushingVram] = useState(false)
 
   const chatScrollContainerRef = useRef(null)
   const latestUserMsgRef = useRef(null)
@@ -89,6 +90,38 @@ export default function App() {
     } catch (e) {
       console.error('Status check failed:', e)
     }
+  }
+
+  const handleFlushVram = async (exceptModel = null) => {
+    setFlushingVram(true)
+    try {
+      const r = await fetch('/api/models/flush', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ except_model: exceptModel }),
+      })
+      if (r.ok) {
+        const data = await r.json()
+        setSystemStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                hardware: data.hardware || prev.hardware,
+                running_models: data.running_models || [],
+              }
+            : prev
+        )
+      }
+    } catch (e) {
+      console.error('VRAM flush failed:', e)
+    } finally {
+      setFlushingVram(false)
+    }
+  }
+
+  const handleSwitchModel = async (newModel) => {
+    setSelectedModel(newModel)
+    await handleFlushVram(newModel)
   }
 
   const fetchConversations = async () => {
@@ -150,6 +183,8 @@ export default function App() {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setLeftSidebarOpen(false)
     }
+    // Automatically flush GPU VRAM cache whenever starting a new chat
+    handleFlushVram(null)
   }
 
   const handleSaveContextOnActiveChat = async (newCtx) => {
@@ -170,6 +205,8 @@ export default function App() {
     await fetch(`/api/conversations/${convId}`, { method: 'DELETE' })
     if (activeConvId === convId) {
       startNewChat()
+    } else {
+      await fetchSystemStatus()
     }
     await fetchConversations()
     await fetchArtifacts()
@@ -535,16 +572,34 @@ export default function App() {
             </div>
 
             {hw && (
-              <div
-                onClick={() => setHwModalOpen(true)}
-                className="p-3 border-t border-white/[0.075] bg-[#0B0D12] hover:bg-[#11141C] cursor-pointer transition"
-              >
-                <div className="flex items-center justify-between text-[11px] text-slate-300 mb-1">
-                  <span className="truncate font-medium">{hw.gpu?.name}</span>
-                  <span className="text-[10px] font-mono text-[#10B981]">LOCAL GPU</span>
+              <div className="p-3 border-t border-white/[0.075] bg-[#0B0D12] space-y-2">
+                <div
+                  onClick={() => setHwModalOpen(true)}
+                  className="cursor-pointer hover:opacity-90 transition"
+                >
+                  <div className="flex items-center justify-between text-[11px] text-slate-300 mb-0.5">
+                    <span className="truncate font-medium">{hw.gpu?.name}</span>
+                    <span className="text-[10px] font-mono text-[#10B981]">LOCAL GPU</span>
+                  </div>
+                  <div className="text-[11px] font-mono text-slate-400 tabular-nums">
+                    {hw.gpu.vram_free_gb} GB free of {hw.gpu.vram_total_gb} GB memory
+                  </div>
                 </div>
-                <div className="text-[11px] font-mono text-slate-400 tabular-nums">
-                  {hw.gpu.vram_free_gb} GB free of {hw.gpu.vram_total_gb} GB memory
+                <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.06]">
+                  <span className="text-[10px] font-mono text-slate-500 truncate">
+                    {systemStatus?.running_models?.length > 0
+                      ? `Loaded: ${systemStatus.running_models.map((m) => m.name).join(', ')}`
+                      : 'VRAM cache idle'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={flushingVram}
+                    onClick={() => handleFlushVram(null)}
+                    className="px-2 py-1 rounded bg-white/[0.06] hover:bg-[#D97757]/20 hover:text-[#D97757] text-[10px] font-mono text-slate-300 border border-white/[0.08] shrink-0 transition"
+                    title="Unload all models from GPU VRAM immediately"
+                  >
+                    {flushingVram ? 'Clearing...' : 'Clear VRAM'}
+                  </button>
                 </div>
               </div>
             )}
@@ -744,7 +799,7 @@ export default function App() {
                       <select
                         aria-label="Choose AI Model"
                         value={selectedModel}
-                        onChange={(e) => setSelectedModel(e.target.value)}
+                        onChange={(e) => handleSwitchModel(e.target.value)}
                         className="h-8 pl-2 pr-6 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-[11px] sm:text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
                       >
                         {installedModels.map((m) => (
@@ -1102,6 +1157,29 @@ export default function App() {
                 </div>
               </div>
 
+              <div className="p-4 rounded-xl bg-[#141821] border border-white/[0.08] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold text-white">
+                    GPU VRAM Cache Management (Auto-Clears on New Chat & 3m Idle)
+                  </div>
+                  <div className="text-xs text-slate-400 mt-0.5">
+                    {systemStatus?.running_models?.length > 0
+                      ? `Currently in VRAM: ${systemStatus.running_models
+                          .map((m) => `${m.name} (${m.vram_gb} GB)`)
+                          .join(', ')}`
+                      : 'No AI models currently held in VRAM cache.'}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={flushingVram}
+                  onClick={() => handleFlushVram(null)}
+                  className="h-9 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium shrink-0 transition"
+                >
+                  {flushingVram ? 'Clearing VRAM...' : 'Clear GPU VRAM Now'}
+                </button>
+              </div>
+
               <div className="p-4 rounded-xl bg-[#0D0F14] border border-white/[0.08] space-y-2">
                 <div className="text-xs font-semibold text-white">
                   How the App Is Tuned for This Machine
@@ -1192,7 +1270,7 @@ export default function App() {
                           {isInstalled ? (
                             <button
                               onClick={() => {
-                                setSelectedModel(rec.id)
+                                handleSwitchModel(rec.id)
                                 setModelModalOpen(false)
                               }}
                               className={`h-8 px-3 rounded-lg text-xs font-medium transition ${

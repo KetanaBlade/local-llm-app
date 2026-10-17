@@ -306,16 +306,15 @@ def _profile_nvidia_discrete(
             "unified_memory": False,
         },
         "tuning": {
-            "recommended_num_ctx": 16384 if vram_free >= 8.5 else 8192,
+            "recommended_num_ctx": 8192,
             "vram_handoff_before_media": True,
-            "keep_alive": "15m",
+            "keep_alive": "3m",
             "flash_attention": True,
             "kv_cache_quant": "q8_0",
             "explanation": (
                 f"Detected {vram_total}GB dedicated VRAM ({vram_free}GB free) + {ram_total_gb}GB system RAM. "
-                "7B–14B Q4_K_M models run 100% inside ultra-fast GDDR6X VRAM (~45–85 tok/s). "
-                "Automatic VRAM Hand-Off is ENABLED: Ollama gracefully evicts the LLM from VRAM "
-                "before launching heavy GPU image/video generation to prevent 12GB OOM crashes."
+                "Single-Model VRAM Lock is ENABLED: switching models or starting a new chat automatically "
+                "evicts prior models from VRAM, and idle models unload after 3 minutes."
             ),
         },
         "recommended_models": [

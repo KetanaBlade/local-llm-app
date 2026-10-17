@@ -127,6 +127,34 @@ async def list_running_models() -> List[Dict[str, Any]]:
         return []
 
 
+async def flush_ollama_vram(except_model: Optional[str] = None) -> List[str]:
+    """
+    Evict loaded Ollama models from GPU VRAM.
+    If `except_model` is provided, evicts all loaded models EXCEPT `except_model`
+    so two models never stack in VRAM simultaneously.
+    """
+    unloaded: List[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{OLLAMA_BASE}/api/ps")
+            if r.status_code != 200:
+                return []
+            for m in r.json().get("models", []):
+                name = m.get("name")
+                if not name:
+                    continue
+                if except_model and name == except_model:
+                    continue
+                await client.post(
+                    f"{OLLAMA_BASE}/api/generate",
+                    json={"model": name, "keep_alive": 0},
+                )
+                unloaded.append(name)
+    except Exception:
+        pass
+    return unloaded
+
+
 SYSTEM_PROMPT_AGENT = """You are Local AI Studio, a personal AI assistant and file creator running 100% on the user's computer.
 
 You can answer general questions conversationally AND you have local tools to create real files when asked:
@@ -239,6 +267,8 @@ async def run_agent_stream(
     chat_context: str = "",
 ) -> AsyncGenerator[Dict[str, Any], None]:
     await ensure_ollama_running()
+    # Ensure no other model is simultaneously hogging VRAM alongside `model`
+    await flush_ollama_vram(except_model=model)
     tuning = hw_profile.get("tuning", {})
     num_ctx = tuning.get("recommended_num_ctx", 8192)
     keep_alive = tuning.get("keep_alive", "10m")

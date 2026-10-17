@@ -31,6 +31,7 @@ from .agent import (
     OLLAMA_BASE,
     ensure_ollama_running,
     execute_tool_call,
+    flush_ollama_vram,
     list_installed_models,
     list_running_models,
     run_agent_stream,
@@ -115,7 +116,7 @@ async def lan_and_privacy_guard(request: Request, call_next):
 class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     prompt: str
-    model: str = "qwen2.5-coder:7b"
+    model: str = "llama3.2:3b"
     mode: str = "agent"
     context: Optional[str] = None
 
@@ -130,6 +131,10 @@ class PullModelRequest(BaseModel):
 
 class UnloadModelRequest(BaseModel):
     model: str
+
+
+class FlushVramRequest(BaseModel):
+    except_model: Optional[str] = None
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -235,6 +240,20 @@ async def api_unload_model(req: UnloadModelRequest):
         return {"status": "error", "detail": str(exc)}
 
 
+@app.post("/api/models/flush")
+async def api_flush_vram(req: FlushVramRequest = FlushVramRequest()):
+    unloaded = await flush_ollama_vram(except_model=req.except_model)
+    settings = await get_settings()
+    hw = build_hardware_profile(override_profile=settings.get("hardware_profile_override", "auto"))
+    running = await list_running_models()
+    return {
+        "status": "flushed",
+        "unloaded_models": unloaded,
+        "hardware": hw,
+        "running_models": running,
+    }
+
+
 @app.get("/api/conversations")
 async def api_list_conversations():
     return {"conversations": await list_conversations()}
@@ -243,9 +262,10 @@ async def api_list_conversations():
 @app.post("/api/conversations")
 async def api_create_conversation(payload: Dict[str, Any]):
     title = payload.get("title") or "New Chat"
-    model = payload.get("model") or "qwen2.5-coder:7b"
+    model = payload.get("model") or "llama3.2:3b"
     mode = payload.get("mode") or "agent"
     context = payload.get("context") or ""
+    await flush_ollama_vram()
     conv = await create_conversation(title=title, model=model, mode=mode, context=context)
     return conv
 
@@ -266,6 +286,7 @@ async def api_update_conversation_context(conversation_id: str, req: ContextUpda
 
 @app.delete("/api/conversations/{conversation_id}")
 async def api_delete_conversation(conversation_id: str):
+    await flush_ollama_vram()
     res = await delete_conversation(conversation_id)
     return res
 
