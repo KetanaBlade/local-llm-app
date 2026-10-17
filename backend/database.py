@@ -47,7 +47,7 @@ async def init_db() -> None:
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model TEXT NOT NULL,
-                mode TEXT NOT NULL DEFAULT 'agent',
+                mode TEXT NOT NULL DEFAULT 'chat',
                 context TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
@@ -141,7 +141,7 @@ async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
 async def create_conversation(
     title: str,
     model: str,
-    mode: str = "agent",
+    mode: str = "chat",
     context: str = "",
 ) -> Dict[str, Any]:
     cid = str(uuid.uuid4())

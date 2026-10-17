@@ -60,7 +60,7 @@ export default function App() {
 
   // Default to conversational model (llama3.2:3b) rather than a coding model
   const [selectedModel, setSelectedModel] = useState('llama3.2:3b')
-  const [orchestratorMode, setOrchestratorMode] = useState(true)
+  const [orchestratorMode, setOrchestratorMode] = useState(false)
   const [imageGenMode, setImageGenMode] = useState(false)
   const [imageGenStyle, setImageGenStyle] = useState('auto')
   const [promptInput, setPromptInput] = useState('')
@@ -231,6 +231,7 @@ export default function App() {
         setMessages(data.messages || [])
         setChatContext(data.context || '')
         setContextExpanded(Boolean(data.context))
+        setOrchestratorMode(data.mode === 'agent')
         if (typeof window !== 'undefined' && window.innerWidth < 1024) {
           setLeftSidebarOpen(false)
         }
@@ -246,6 +247,7 @@ export default function App() {
     setChatContext('')
     setContextExpanded(true)
     setPromptInput('')
+    setOrchestratorMode(false)
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setLeftSidebarOpen(false)
     }
@@ -1140,8 +1142,8 @@ export default function App() {
                       }`}
                       title={
                         orchestratorMode
-                          ? '⚡ Orchestrator Mode active: Python execution, local file inspection/editing, and multi-step agent tools enabled'
-                          : '💬 Conversation Mode active: Direct conversational responses without tool execution'
+                          ? '⚡ Orchestrator Mode active: Python execution, local file inspection/editing, and multi-step agent tools enabled. Click to switch to 💬 Chat Mode.'
+                          : '💬 Chat Mode (Active by default): Ultra-fast conversational replies. Click to enable ⚡ Orchestrator Mode (Python code execution & file editing).'
                       }
                     >
                       {orchestratorMode ? (

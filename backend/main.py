@@ -120,7 +120,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     prompt: str
     model: str = "llama3.2:3b"
-    mode: str = "agent"
+    mode: str = "chat"
     context: Optional[str] = None
     image_style: Optional[str] = "auto"
 
@@ -404,7 +404,7 @@ async def api_list_conversations():
 async def api_create_conversation(payload: Dict[str, Any]):
     title = payload.get("title") or "New Chat"
     model = payload.get("model") or "llama3.2:3b"
-    mode = payload.get("mode") or "agent"
+    mode = payload.get("mode") or "chat"
     context = payload.get("context") or ""
     await flush_ollama_vram()
     conv = await create_conversation(title=title, model=model, mode=mode, context=context)
