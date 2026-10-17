@@ -16,6 +16,7 @@ import asyncio
 import html
 import math
 import mimetypes
+import os
 import platform
 import random
 import re
@@ -42,6 +43,34 @@ SD_MODEL_DIR = ROOT_DIR / "models" / "image"
 
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def confine_to_workspace(candidate: Path | str, base_dir: Path = WORKSPACE_DIR) -> Path:
+    """
+    Strict Path Confinement Boundary (inspired by Odysseus).
+    - Blocks NUL bytes, newlines, and illegal escape characters.
+    - Canonicalizes both base_dir and candidate using resolve().
+    - Validates that os.path.commonpath([base_real, cand_real]) == base_real.
+    - Fails closed on any path escape, symlink hop, or cross-drive access.
+    """
+    raw_str = str(candidate)
+    if "\0" in raw_str or "\n" in raw_str or "\r" in raw_str:
+        raise ValueError("Invalid path: illegal control characters detected")
+
+    base_real = base_dir.resolve()
+    cand_path = Path(candidate)
+    if not cand_path.is_absolute():
+        cand_path = base_real / cand_path
+    cand_real = cand_path.resolve()
+
+    try:
+        common = Path(os.path.commonpath([str(base_real), str(cand_real)])).resolve()
+        if common != base_real:
+            raise ValueError(f"Path escape attempt blocked: '{cand_real}' is outside allowed '{base_real}'")
+    except Exception as exc:
+        raise ValueError(f"Access denied: path is outside allowed workspace ({base_real}): {exc}")
+
+    return cand_real
 
 
 def _slugify(text: str) -> str:
@@ -139,7 +168,7 @@ async def tool_create_excel_spreadsheet(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.xlsx"
-    filepath = ARTIFACTS_DIR / filename
+    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
 
     wb = openpyxl.Workbook()
     default_ws = wb.active
@@ -262,7 +291,7 @@ async def tool_create_document(
         fmt = "pdf"
 
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.{fmt}"
-    filepath = ARTIFACTS_DIR / filename
+    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
 
     markdown_preview_lines = [f"# {title}\n"]
     for sec in sections:
@@ -376,7 +405,7 @@ async def tool_build_interactive_app(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.html"
-    filepath = ARTIFACTS_DIR / filename
+    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
     filepath.write_text(html_code, encoding="utf-8")
 
     artifact = await register_artifact(
@@ -441,7 +470,7 @@ async def tool_generate_visual_media(
         import matplotlib.pyplot as plt
 
         filename = f"chart_{slug}_{int(time.time()) % 10000}.png"
-        filepath = ARTIFACTS_DIR / filename
+        filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
 
         fig, ax = plt.subplots(figsize=(10, 5.8), dpi=160)
         fig.patch.set_facecolor("#0F1115")
@@ -495,7 +524,7 @@ async def tool_generate_visual_media(
     if not is_video and SD_CLI_PATH.exists() and local_sd_model:
         await _evict_ollama_vram_if_needed(active_model, vram_handoff)
         filename = f"img_{slug}_{int(time.time()) % 10000}.png"
-        filepath = ARTIFACTS_DIR / filename
+        filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
         seed = random.randint(1, 999999999)
         enhanced_prompt = f"{prompt}, masterpiece, high resolution, detailed, sharp focus, natural lighting"
         negative_prompt = "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
@@ -556,7 +585,7 @@ async def tool_generate_visual_media(
 
     # 3. Animated Motion Clip
     filename = f"motion_{slug}_{int(time.time()) % 10000}.gif"
-    filepath = ARTIFACTS_DIR / filename
+    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
     frames = []
     width, height = 640, 380
     for f_idx in range(24):
@@ -607,7 +636,7 @@ async def tool_run_python_sandbox(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     before_files = {p.name: p.stat().st_mtime for p in ARTIFACTS_DIR.iterdir() if p.is_file()}
-    script_file = ARTIFACTS_DIR / f"_sandbox_exec_{int(time.time() * 1000)}.py"
+    script_file = confine_to_workspace(ARTIFACTS_DIR / f"_sandbox_exec_{int(time.time() * 1000)}.py")
     script_file.write_text(script, encoding="utf-8")
 
     start_t = time.time()

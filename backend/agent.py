@@ -12,6 +12,7 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import os
 import platform
@@ -155,6 +156,84 @@ async def flush_ollama_vram(except_model: Optional[str] = None) -> List[str]:
     return unloaded
 
 
+def get_current_date_context() -> str:
+    """
+    Date Grounding Preamble (inspired by Odysseus).
+    Grounds local LLM queries, plans, spreadsheets, and timeframes in the real world date,
+    preventing models from defaulting to historical pre-training cutoff years.
+    """
+    now = datetime.now()
+    return (
+        f"Today's date is {now.strftime('%A, %B %d, %Y')} ({now.strftime('%Y-%m-%d')}). "
+        f"Ground all time-sensitive plans, documents, spreadsheets, and relative dates in {now.year} "
+        f"rather than historical pre-training cutoff years."
+    )
+
+
+def estimate_text_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def compact_conversation_history(
+    history_messages: List[Dict[str, Any]],
+    num_ctx: int = 8192,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Cursor-Style Context Auto-Compactor (inspired by Odysseus).
+    When total accumulated messages exceed 8 turns OR ~60% of the model's context window,
+    older turns are densely summarized into a structured recap, preserving key goals,
+    files, and decisions while keeping the active prompt lean and avoiding context overflow.
+    """
+    valid_msgs = [m for m in history_messages if m.get("role") in ("user", "assistant") and m.get("content")]
+    if len(valid_msgs) <= 6:
+        return valid_msgs, None
+
+    total_toks = sum(estimate_text_tokens(m.get("content", "")) for m in valid_msgs)
+    threshold = int(num_ctx * 0.60)
+
+    # If within safe budget and under 10 turns, no compaction needed
+    if total_toks < threshold and len(valid_msgs) <= 10:
+        return valid_msgs, None
+
+    # Split into older turns to archive, and recent turns to preserve verbatim
+    recent_count = 4
+    older = valid_msgs[:-recent_count]
+    recent = valid_msgs[-recent_count:]
+
+    # Build dense structured archive
+    turn_summaries = []
+    artifacts_created = []
+    for idx, m in enumerate(older, start=1):
+        role = "User" if m["role"] == "user" else "Assistant"
+        content_preview = m["content"].strip().replace("\n", " ")
+        if len(content_preview) > 160:
+            content_preview = content_preview[:160] + "..."
+        turn_summaries.append(f"- Turn {idx} ({role}): {content_preview}")
+        for art in m.get("artifacts") or []:
+            if isinstance(art, dict) and art.get("filename"):
+                artifacts_created.append(f"{art['filename']} ({art.get('category', 'file')})")
+
+    archive_lines = [
+        "=== CONVERSATION ARCHIVE & RECAP (AUTO-COMPACTED TO PRESERVE CONTEXT) ===",
+        f"Archived {len(older)} earlier turn(s):",
+        "\n".join(turn_summaries),
+    ]
+    if artifacts_created:
+        archive_lines.append(f"Files / Artifacts Created in Earlier Turns: {', '.join(sorted(set(artifacts_created)))}")
+    archive_lines.append("Continue the conversation seamlessly with full awareness of the above context.")
+    archive_lines.append("=========================================================================")
+
+    compaction_block = "\n".join(archive_lines)
+
+    compacted = [
+        {"role": "system", "content": compaction_block},
+        *recent,
+    ]
+    return compacted, f"Auto-compacted {len(older)} earlier message turns ({total_toks} tokens preserved)"
+
+
 SYSTEM_PROMPT_AGENT = """You are Local AI Studio, a personal AI assistant and file creator running 100% on the user's computer.
 
 You can answer general questions conversationally AND you have local tools to create real files when asked:
@@ -276,6 +355,9 @@ async def run_agent_stream(
     allow_web_search = not offline_mode
 
     sys_prompt = SYSTEM_PROMPT_AGENT if mode == "agent" else SYSTEM_PROMPT_CHAT
+    # 1. Date Grounding (inspired by Odysseus): stops models from defaulting to historical training-cutoff years
+    sys_prompt = f"{get_current_date_context()}\n\n{sys_prompt}"
+
     if chat_context and chat_context.strip():
         sys_prompt += (
             "\n\n=== USER BACKGROUND CONTEXT & INSTRUCTIONS FOR THIS CONVERSATION ===\n"
@@ -283,9 +365,14 @@ async def run_agent_stream(
             "===================================================================="
         )
     ollama_messages = [{"role": "system", "content": sys_prompt}]
-    # Full conversation history is passed regardless of which model generated earlier turns
-    for m in history_messages[-16:]:
-        if m["role"] in ("user", "assistant"):
+
+    # 2. Context Auto-Compaction (Cursor-style self-summarizing context window guard)
+    compacted_history, compaction_notice = compact_conversation_history(history_messages, num_ctx=num_ctx)
+    if compaction_notice:
+        yield {"type": "status", "message": f"Context compact: {compaction_notice}"}
+
+    for m in compacted_history:
+        if m["role"] in ("system", "user", "assistant"):
             ollama_messages.append({"role": m["role"], "content": m["content"]})
     ollama_messages.append({"role": "user", "content": user_prompt})
 
