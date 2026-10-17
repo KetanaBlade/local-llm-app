@@ -120,8 +120,15 @@ export default function App() {
   const chatScrollContainerRef = useRef(null)
   const latestUserMsgRef = useRef(null)
   const abortControllerRef = useRef(null)
+  const lastSendTimeRef = useRef(0)
 
   const handleStopResponse = async () => {
+    // Click-through & ghost-click guard: ignore stop calls triggered within 500ms of prompt submission
+    if (Date.now() - lastSendTimeRef.current < 500) {
+      console.log('Stop request ignored (click-through guard)')
+      return
+    }
+
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
@@ -434,6 +441,8 @@ export default function App() {
     if (!text || isStreaming) return
     if (!overrideText) setPromptInput('')
 
+    lastSendTimeRef.current = Date.now()
+
     if (isSleeping) {
       setIsSleeping(false)
     }
@@ -484,6 +493,11 @@ export default function App() {
           context: chatContext,
         }),
       })
+
+      if (!response.ok) {
+        const errText = await response.text()
+        throw new Error(`Server returned HTTP ${response.status}: ${errText.slice(0, 150)}`)
+      }
 
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
@@ -591,8 +605,22 @@ export default function App() {
     } catch (err) {
       if (err.name === 'AbortError') {
         console.log('Chat generation stopped by user.')
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAssistantId && !m.content
+              ? { ...m, content: '*(Response stopped by user)*' }
+              : m
+          )
+        )
       } else {
         console.error('Stream error:', err)
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAssistantId && !m.content
+              ? { ...m, content: `*(Generation error: ${err.message || 'connection failed'})*` }
+              : m
+          )
+        )
       }
     } finally {
       abortControllerRef.current = null
@@ -1197,11 +1225,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleStopResponse}
-                      onPointerDown={(e) => {
-                        e.preventDefault()
-                        handleStopResponse()
-                      }}
-                      className="h-9 px-3.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-medium text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      className="min-h-[44px] px-3.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-medium text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer"
                       title="Stop generating response immediately"
                     >
                       <Square className="w-3.5 h-3.5 fill-current text-red-400" />
@@ -1210,14 +1234,8 @@ export default function App() {
                   ) : (
                     <button
                       type="submit"
-                      disabled={!promptInput.trim()}
-                      onPointerDown={(e) => {
-                        if (promptInput.trim()) {
-                          e.preventDefault()
-                          handleSendPrompt()
-                        }
-                      }}
-                      className={`h-9 min-w-[56px] px-3.5 rounded-lg text-white font-medium text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer disabled:opacity-40 ${
+                      disabled={!promptInput.trim() || isStreaming}
+                      className={`min-h-[44px] min-w-[56px] px-3.5 rounded-lg text-white font-medium text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer disabled:opacity-40 ${
                         imageGenMode
                           ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-sm shadow-purple-600/30'
                           : 'bg-[#D97757] hover:bg-[#E4886A]'
@@ -2323,11 +2341,18 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
         </div>
       )}
 
-      {msg.content && (
+      {msg.content ? (
         <div
           className="prose-studio"
           dangerouslySetInnerHTML={{ __html: marked.parse(msg.content) }}
         />
+      ) : (
+        !isUser && (
+          <div className="flex items-center gap-2 py-1.5 text-xs text-slate-400 font-mono">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#D97757] animate-pulse" />
+            <span className="italic">{msg.thinking ? 'Thinking through response...' : 'Generating response...'}</span>
+          </div>
+        )
       )}
 
       {/* Inline File Cards with Direct Preview AND Direct Delete Button */}
