@@ -34,6 +34,7 @@ import {
   Key,
   Terminal,
   Zap,
+  MessageSquare,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -1084,6 +1085,18 @@ export default function App() {
                   </div>
                 )}
 
+                {orchestratorMode && !imageGenMode && (
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300 font-mono">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="truncate">Orchestrator Agent active: Python sandbox, openpyxl, file tools & web search</span>
+                    </div>
+                    <span className="hidden sm:inline text-[10px] text-amber-300/80 px-1.5 py-0.5 rounded bg-amber-500/20 shrink-0">
+                      Antigravity Mode
+                    </span>
+                  </div>
+                )}
+
                 <textarea
                   rows={2}
                   value={promptInput}
@@ -1096,8 +1109,10 @@ export default function App() {
                   }}
                   placeholder={
                     imageGenMode
-                      ? "Describe the image you want to render (e.g. cozy cabin in misty mountains at dusk, 35mm photography)..."
-                      : "Ask a question, or ask to generate an image, Excel sheet, PDF, or app..."
+                      ? "Describe the image to render on GPU (e.g. cozy cabin in misty mountains at dusk, 35mm photography)..."
+                      : orchestratorMode
+                      ? "Ask to plan, write code, inspect/edit local files, build an Excel sheet, or search the web..."
+                      : "Ask any question, brainstorm, or discuss ideas..."
                   }
                   className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-500 resize-none focus:outline-none px-1.5 py-0.5"
                 />
@@ -1121,24 +1136,59 @@ export default function App() {
                       <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
 
-                    {/* Dedicated Direct Image Gen Mode Button */}
-                    <button
-                      type="button"
-                      onClick={() => setImageGenMode((v) => !v)}
-                      className={`h-9 px-3 rounded-lg border text-xs font-medium flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
-                        imageGenMode
-                          ? 'border-purple-500/60 bg-purple-500/20 text-purple-200 shadow-sm shadow-purple-500/20'
-                          : 'border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-slate-300'
-                      }`}
-                      title={
-                        imageGenMode
-                          ? 'Image Mode active: Prompts render directly on GPU with zero LLM restrictions. Click to return to chat.'
-                          : 'Turn on Image Mode to render images directly with local diffusion'
-                      }
-                    >
-                      <ImageIcon className={`w-3.5 h-3.5 ${imageGenMode ? 'text-purple-400' : 'text-[#D97757]'}`} />
-                      <span>{imageGenMode ? 'Image Mode: ON' : 'Image Gen'}</span>
-                    </button>
+                    {/* SEGMENTED STUDIO MODE CONTROL: CHAT | ORCHESTRATOR | IMAGE */}
+                    <div className="flex items-center p-0.5 rounded-lg bg-[#11141D] border border-white/[0.08] shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImageGenMode(false)
+                          setOrchestratorMode(false)
+                        }}
+                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                          !orchestratorMode && !imageGenMode
+                            ? 'bg-sky-500/20 text-sky-200 border border-sky-500/40 shadow-sm'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="💬 Chat Mode: Fast conversational intelligence for Q&A, brainstorming, and writing."
+                      >
+                        <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Chat</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setImageGenMode(false)
+                          setOrchestratorMode(true)
+                        }}
+                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                          orchestratorMode && !imageGenMode
+                            ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40 shadow-sm'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="⚡ Orchestrator Agent (Antigravity / Claude Code Mode): Autonomous pair programmer with direct local file access, Python sandbox, openpyxl Excel editing, web search, and multi-step tool execution."
+                      >
+                        <Zap className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Orchestrator</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOrchestratorMode(false)
+                          setImageGenMode(true)
+                        }}
+                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                          imageGenMode
+                            ? 'bg-purple-500/20 text-purple-200 border border-purple-500/40 shadow-sm'
+                            : 'text-slate-400 hover:text-slate-200'
+                        }`}
+                        title="🎨 Image Studio: Direct local neural diffusion rendering on your GPU."
+                      >
+                        <ImageIcon className="w-3.5 h-3.5 text-purple-400" />
+                        <span>Image</span>
+                      </button>
+                    </div>
 
                     {/* Image Engine / Style Picker (Visible when Image Gen Mode is Active) */}
                     {imageGenMode && (
@@ -1159,32 +1209,6 @@ export default function App() {
                         <ChevronDown className="w-3.5 h-3.5 text-purple-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
                     )}
-
-                    <button
-                      type="button"
-                      onClick={() => setOrchestratorMode((v) => !v)}
-                      className={`h-9 px-2.5 rounded-lg border text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
-                        orchestratorMode
-                          ? 'border-amber-500/35 bg-amber-500/10 text-amber-300 shadow-sm shadow-amber-500/10'
-                          : 'border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-slate-400'
-                      }`}
-                      title={
-                        orchestratorMode
-                          ? '⚡ Orchestrator Mode active: Python execution, local file inspection/editing, and multi-step agent tools enabled. Click to switch to 💬 Chat Mode.'
-                          : '💬 Chat Mode (Active by default): Ultra-fast conversational replies. Click to enable ⚡ Orchestrator Mode (Python code execution & file editing).'
-                      }
-                    >
-                      {orchestratorMode ? (
-                        <>
-                          <Zap className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Orchestrator</span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="text-slate-400">💬 Chat</span>
-                        </>
-                      )}
-                    </button>
 
                     <button
                       type="button"

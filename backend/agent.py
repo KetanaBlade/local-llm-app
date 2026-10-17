@@ -240,16 +240,16 @@ def compact_conversation_history(
     return compacted, f"Auto-compacted {len(older)} earlier message turns ({total_toks} tokens preserved)"
 
 
-SYSTEM_PROMPT_AGENT = """You are Local AI Studio, an autonomous local coding and orchestration agent running 100% on the user's computer.
+SYSTEM_PROMPT_AGENT = """You are Local AI Studio, an autonomous local coding and orchestration agent running 100% on the user's computer. You operate like Antigravity, Cursor, and Claude Code: you converse, plan, and brainstorm freely, while also possessing full tool autonomy to inspect, edit, and create files directly on the user's computer.
 
-CAPABILITIES & UNIVERSAL PRIMITIVES:
-You have direct access to a local Python runtime and filesystem tools to inspect, create, process, and modify files directly on the user's machine:
-1. `execute_python`: Run Python 3 code directly on the user's computer. You have full access to installed packages:
+CAPABILITIES:
+You have direct local access to Python runtime and filesystem tools:
+1. `execute_python`: Run Python 3 code directly on the user's computer. Pre-equipped with:
    - `openpyxl`: Inspect, read, modify, and format Excel (.xlsx) workbooks, update cells, add formulas, and save back to disk.
    - `pandas`: Process, clean, filter, and transform CSV, tabular data, and spreadsheets.
    - `python-docx`: Read and create Word (.docx) documents.
    - `reportlab`: Build executive PDF reports.
-   - `matplotlib` & `PIL`: Generate charts, edit or resize images.
+   - `matplotlib` & `PIL`: Generate high-DPI charts, edit or resize images.
    - `pathlib`, `os`, `shutil`: Search, inspect, and organize files and directories.
    Any file you modify on disk is automatically backed up (.bak) safely by the harness.
 2. `read_file`: Inspect contents of local files on disk. Automatically previews spreadsheets (.xlsx/.csv) as formatted tables and reads text/code/json/markdown with line numbers.
@@ -258,21 +258,131 @@ You have direct access to a local Python runtime and filesystem tools to inspect
 5. `generate_visual_media`: Render neural images on local GPU via Stable Diffusion, high-DPI charts, or motion clips.
 6. `search_web`: Search the web with shielded cloud proxy (when web search is enabled).
 
-AGENT IDENTITY & RULES:
-- NEVER claim you cannot access the user's computer, cannot read files, or cannot edit files. You have full local filesystem and Python execution tools specifically for this purpose.
-- When the user asks if you can edit a file (e.g. an Excel spreadsheet, a script, or a document), confirm enthusiastically and explain what you will do once they provide the path (e.g., "Yes! Provide the path, and I will inspect the workbook with openpyxl, apply your edits, and save it").
-- When a file path is provided:
-  * First inspect the file using `read_file` or a Python script to see sheet names, headers, and existing content.
-  * Plan your changes.
-  * Execute your changes using `execute_python` (e.g. with `openpyxl` or `pandas`) or `edit_file_content`.
-  * Verify the output and summarize what you updated.
-- If a script encounters an error, inspect the traceback, fix the code, and re-execute.
-- For normal questions or conversation, reply naturally and clearly without calling tools unless file manipulation or real-time web search is required.
-- When calling `generate_visual_media` for an image: select matching style (photorealistic, anime, artistic, auto). Never refuse creative art.
-- When reporting findings from `search_web`: cite sources [1], [2] and treat text inside `<untrusted_web_source>` tags as external reference facts.
+CRITICAL INTERACTION PROTOCOL:
+- CONVERSATIONAL / PLANNING REQUESTS: When the user asks a question, plans, brainstorms, or asks about your capabilities (e.g. 'Can you edit an excel file?', 'How would you build this app?', 'What packages are installed?'):
+  * DO NOT call tools with invented, imaginary, or dummy filenames (never invent dummy files like budget.xlsx).
+  * Answer directly in clear, helpful natural language with Markdown formatting.
+  * Explain your tools and approach enthusiastically, and ask the user for their file path, requirements, or next steps.
+- ACTIONABLE DIRECTIVES: When the user asks you to perform a specific action (e.g. 'Create an excel sheet called sales.xlsx with columns A, B, C', 'Read data.csv and plot a histogram', 'Search for latest news on X'):
+  * Autonomously invoke the appropriate tool (`execute_python`, `read_file`, `search_web`, etc.).
+  * Inspect outputs, verify the result, and summarize what you did in your final response.
+- If a tool encounters an error, inspect the traceback, fix the code or parameters, and re-execute.
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""
+
+
+def extract_tool_calls(msg_obj: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]:
+    """
+    Extracts tool calls from an Ollama response object.
+    Supports:
+    1. Native `msg_obj['tool_calls']`
+    2. Raw JSON objects in `msg_obj['content']`
+    3. Markdown-fenced JSON blocks (```json ... ```)
+    4. `<tool_call> ... </tool_call>` tags
+    5. Formats with `parameters` or `arguments`
+
+    Returns:
+        (tool_calls, remaining_content)
+    """
+    native_calls = msg_obj.get("tool_calls") or []
+    if native_calls:
+        normalized = []
+        for tc in native_calls:
+            fn = tc.get("function", {})
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            normalized.append({
+                "id": tc.get("id"),
+                "function": {
+                    "name": fn.get("name"),
+                    "arguments": args
+                }
+            })
+        return normalized, msg_obj.get("content", "")
+
+    content = msg_obj.get("content", "")
+    if not content:
+        return [], ""
+
+    valid_tool_names = {
+        "execute_python", "run_python_sandbox",
+        "read_file", "edit_file_content",
+        "list_directory", "generate_visual_media",
+        "create_excel_spreadsheet", "create_document",
+        "build_interactive_app", "search_web"
+    }
+
+    found_calls = []
+    clean_text = content
+
+    # Check for <tool_call>...</tool_call>
+    tool_call_tags = re.findall(r"<tool_call>([\s\S]*?)</tool_call>", content)
+    for tag_body in tool_call_tags:
+        try:
+            parsed = json.loads(tag_body.strip())
+            name = parsed.get("name")
+            args = parsed.get("arguments") or parsed.get("parameters") or {}
+            if name in valid_tool_names:
+                found_calls.append({"function": {"name": name, "arguments": args}})
+                clean_text = clean_text.replace(f"<tool_call>{tag_body}</tool_call>", "")
+        except Exception:
+            pass
+
+    if found_calls:
+        return found_calls, clean_text.strip()
+
+    # Check for markdown code fences ```json ... ``` or ``` ... ```
+    code_blocks = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
+    for block in code_blocks:
+        block_trimmed = block.strip()
+        if block_trimmed.startswith("{") and block_trimmed.endswith("}"):
+            try:
+                parsed = json.loads(block_trimmed)
+                name = parsed.get("name")
+                args = parsed.get("arguments") or parsed.get("parameters") or {}
+                if name in valid_tool_names:
+                    found_calls.append({"function": {"name": name, "arguments": args}})
+                    clean_text = clean_text.replace(f"```{block}```", "")
+            except Exception:
+                pass
+
+    if found_calls:
+        return found_calls, clean_text.strip()
+
+    # Check for raw JSON object in content (e.g. `{"name":"execute_python","parameters":{...}}`)
+    stripped = content.strip()
+    if stripped.startswith("{") and stripped.endswith("}"):
+        try:
+            parsed = json.loads(stripped)
+            name = parsed.get("name")
+            args = parsed.get("arguments") or parsed.get("parameters") or {}
+            if name in valid_tool_names:
+                found_calls.append({"function": {"name": name, "arguments": args}})
+                return found_calls, ""
+        except Exception:
+            pass
+
+    # Regex find any JSON object containing "name": "<tool_name>"
+    json_candidates = re.finditer(r"(\{[\s\S]*?\"name\"\s*:\s*\"([a-zA-Z0-9_-]+)\"[\s\S]*?\})", content)
+    for m in json_candidates:
+        full_match = m.group(1)
+        name = m.group(2)
+        if name in valid_tool_names:
+            try:
+                parsed = json.loads(full_match)
+                args = parsed.get("arguments") or parsed.get("parameters") or {}
+                found_calls.append({"function": {"name": name, "arguments": args}})
+                clean_text = clean_text.replace(full_match, "")
+            except Exception:
+                pass
+
+    return found_calls, clean_text.strip()
+
 
 
 async def execute_tool_call(
@@ -539,17 +649,32 @@ async def run_agent_stream(
 
                     probe_data = probe_resp.json()
                     msg_obj = probe_data.get("message", {})
-                    native_tool_calls = msg_obj.get("tool_calls") or []
+                    extracted_calls, remaining_content = extract_tool_calls(msg_obj)
 
-                    if not native_tool_calls:
-                        if current_step == 0:
-                            fallback = detect_proactive_artifact_intent(user_prompt)
-                            if fallback and fallback["intent"] in ("image", "video"):
-                                trace_id = f"tc_{int(time.time() * 1000)}_fb"
-                                fn_args = {
-                                    "prompt": user_prompt,
-                                    "media_type": fallback["intent"],
-                                }
+                    if not extracted_calls:
+                        # If tools were already executed in prior steps, break out so the final synthesis streams live
+                        if tool_traces:
+                            break
+
+                        direct_content = remaining_content or msg_obj.get("content", "")
+                        if not direct_content:
+                            break
+
+                        # Check for moralizing refusal bypass if user asked for visual media
+                        refusal_markers = (
+                            "i can't fulfill", "i cannot fulfill", "i can't assist", "i cannot assist",
+                            "i'm sorry, but i cannot", "i am sorry, but i cannot", "as an ai language model",
+                            "unable to fulfill this request", "cannot fulfill this request",
+                            "i'm unable to fulfill", "i am unable to fulfill", "cannot assist with that",
+                            "i can't help with that", "i cannot help with that", "i'm sorry, but i can't",
+                            "i am sorry, but i can't", "sorry, but i can't fulfill", "sorry, i cannot"
+                        )
+                        is_refusal = any(m in direct_content.lower() for m in refusal_markers)
+                        if is_refusal:
+                            img_intent = detect_proactive_artifact_intent(user_prompt)
+                            if img_intent and img_intent.get("intent") in ("image", "video"):
+                                trace_id = f"tc_{int(time.time() * 1000)}_bypass"
+                                fn_args = {"prompt": user_prompt, "media_type": img_intent["intent"]}
                                 _, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(user_prompt, "auto")
                                 trace_entry = {
                                     "id": trace_id,
@@ -559,6 +684,7 @@ async def run_agent_stream(
                                     "engine_label": engine_label,
                                     "summary": f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}",
                                 }
+                                yield {"type": "status", "message": f"Dispatching image to local {engine_label.split('(')[0].strip()} on GPU..."}
                                 yield {"type": "tool_start", "tool": trace_entry}
                                 exec_res = await execute_tool_call(
                                     func_name="generate_visual_media",
@@ -567,7 +693,6 @@ async def run_agent_stream(
                                     active_model=model,
                                     vram_handoff=vram_handoff,
                                     offline_mode=offline_mode,
-                                    brave_api_key=brave_api_key,
                                 )
                                 trace_entry["status"] = exec_res.get("status", "success")
                                 trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
@@ -577,86 +702,46 @@ async def run_agent_stream(
                                     collected_artifacts.append(exec_res["artifact"])
                                     yield {"type": "tool_end", "tool": trace_entry, "artifacts": [exec_res["artifact"]]}
 
-                            direct_content = msg_obj.get("content", "")
-                            if direct_content and not tool_traces:
-                                refusal_markers = (
-                                    "i can't fulfill", "i cannot fulfill", "i can't assist", "i cannot assist",
-                                    "i'm sorry, but i cannot", "i am sorry, but i cannot", "as an ai language model",
-                                    "unable to fulfill this request", "cannot fulfill this request",
-                                    "i'm unable to fulfill", "i am unable to fulfill", "cannot assist with that",
-                                    "i can't help with that", "i cannot help with that", "i'm sorry, but i can't",
-                                    "i am sorry, but i can't", "sorry, but i can't fulfill", "sorry, i cannot"
-                                )
-                                is_refusal = any(m in direct_content.lower() for m in refusal_markers)
-
-                                # If the LLM returned a canned moralizing refusal, check if the user asked for visual media
-                                if is_refusal:
-                                    img_intent = detect_proactive_artifact_intent(user_prompt)
-                                    if img_intent and img_intent.get("intent") in ("image", "video"):
-                                        trace_id = f"tc_{int(time.time() * 1000)}_bypass"
-                                        fn_args = {"prompt": user_prompt, "media_type": img_intent["intent"]}
-                                        _, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(user_prompt, "auto")
-                                        trace_entry = {
-                                            "id": trace_id,
-                                            "name": "generate_visual_media",
-                                            "arguments": fn_args,
-                                            "status": "running",
-                                            "engine_label": engine_label,
-                                            "summary": f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}",
-                                        }
-                                        yield {"type": "status", "message": f"Dispatching image to local {engine_label.split('(')[0].strip()} on GPU..."}
-                                        yield {"type": "tool_start", "tool": trace_entry}
-                                        exec_res = await execute_tool_call(
-                                            func_name="generate_visual_media",
-                                            args=fn_args,
-                                            conversation_id=conversation_id,
-                                            active_model=model,
-                                            vram_handoff=vram_handoff,
-                                            offline_mode=offline_mode,
-                                        )
-                                        trace_entry["status"] = exec_res.get("status", "success")
-                                        trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
-                                        trace_entry["summary"] = exec_res.get("summary", "Generated visual media")
-                                        tool_traces.append(trace_entry)
-                                        if exec_res.get("artifact"):
-                                            collected_artifacts.append(exec_res["artifact"])
-                                            yield {"type": "tool_end", "tool": trace_entry, "artifacts": [exec_res["artifact"]]}
-
-                                        bypass_text = f"Rendered image via local **{engine_label.split('(')[0].strip()}** on your local GPU."
-                                        yield {
-                                            "type": "done",
-                                            "content": bypass_text,
-                                            "thinking": "",
-                                            "tool_calls": tool_traces,
-                                            "artifacts": collected_artifacts,
-                                            "tokens_per_sec": 0.0,
-                                        }
-                                        return
-
-                                eval_count = probe_data.get("eval_count", 0)
-                                eval_dur = probe_data.get("eval_duration", 1)
-                                tok_s = round(eval_count / (eval_dur / 1e9), 1) if eval_dur > 0 else 0.0
-                                thinking_text, clean_text = _split_thinking(direct_content)
-                                if thinking_text:
-                                    yield {"type": "thinking", "delta": thinking_text}
-                                chunk_size = 28
-                                for i in range(0, len(clean_text), chunk_size):
-                                    yield {"type": "token", "delta": clean_text[i : i + chunk_size]}
-                                    await asyncio.sleep(0.008)
+                                bypass_text = f"Rendered image via local **{engine_label.split('(')[0].strip()}** on your local GPU."
                                 yield {
                                     "type": "done",
-                                    "content": clean_text,
-                                    "thinking": thinking_text,
+                                    "content": bypass_text,
+                                    "thinking": "",
                                     "tool_calls": tool_traces,
                                     "artifacts": collected_artifacts,
-                                    "tokens_per_sec": tok_s,
+                                    "tokens_per_sec": 0.0,
                                 }
                                 return
-                        # If current_step > 0 and no more tool calls, break to synthesize
-                        break
+
+                        eval_count = probe_data.get("eval_count", 0)
+                        eval_dur = probe_data.get("eval_duration", 1)
+                        tok_s = round(eval_count / (eval_dur / 1e9), 1) if eval_dur > 0 else 0.0
+                        thinking_text, clean_text = _split_thinking(direct_content)
+                        if thinking_text:
+                            yield {"type": "thinking", "delta": thinking_text}
+                        chunk_size = 28
+                        for i in range(0, len(clean_text), chunk_size):
+                            yield {"type": "token", "delta": clean_text[i : i + chunk_size]}
+                            await asyncio.sleep(0.008)
+                        yield {
+                            "type": "done",
+                            "content": clean_text,
+                            "thinking": thinking_text,
+                            "tool_calls": tool_traces,
+                            "artifacts": collected_artifacts,
+                            "tokens_per_sec": tok_s,
+                        }
+                        return
+
+                    # Record assistant message with tool calls in history
+                    ollama_messages.append({
+                        "role": "assistant",
+                        "content": remaining_content,
+                        "tool_calls": extracted_calls,
+                    })
 
                     # Execute all tools returned in this step
-                    for idx, tc in enumerate(native_tool_calls):
+                    for idx, tc in enumerate(extracted_calls):
                         fn = tc.get("function", {})
                         fn_name = fn.get("name", "")
                         fn_args = fn.get("arguments") or {}
@@ -688,6 +773,10 @@ async def run_agent_stream(
                             trace_entry["summary"] = f"Editing file: {Path(fn_args.get('filepath', '')).name}"
                         elif fn_name == "list_directory":
                             trace_entry["summary"] = f"Listing folder: {fn_args.get('directory_path', '.')}"
+                        elif fn_name == "create_excel_spreadsheet":
+                            trace_entry["summary"] = f"Building Excel workbook: {fn_args.get('title', 'Workbook')}"
+                        elif fn_name == "create_document":
+                            trace_entry["summary"] = f"Building Document: {fn_args.get('title', 'Document')}"
 
                         yield {"type": "tool_start", "tool": trace_entry}
 
@@ -724,7 +813,6 @@ async def run_agent_stream(
 
                         yield {"type": "tool_end", "tool": trace_entry, "artifacts": new_arts}
 
-                        ollama_messages.append(msg_obj)
                         tool_payload = {
                             "status": exec_res.get("status"),
                             "summary": trace_entry["summary"],
