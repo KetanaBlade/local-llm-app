@@ -26,6 +26,7 @@ import httpx
 
 from .tools import (
     get_tool_schemas,
+    resolve_sd_model_and_prompts,
     tool_build_interactive_app,
     tool_create_document,
     tool_create_excel_spreadsheet,
@@ -247,11 +248,11 @@ You can answer general questions conversationally AND you have local tools to cr
 Guidelines:
 - For normal questions or conversation, simply reply naturally and clearly without calling any tools.
 - When calling `generate_visual_media` for an image: select the matching `style` parameter:
-  * `photorealistic` for real-life camera photos, portraits, landscapes, or if the user asks for 'Realistic Vision'.
+  * `photorealistic` for real-life camera photos, portraits, landscapes, or if the user asks for 'CyberRealistic' or 'Realistic Vision'.
   * `anime` for Japanese anime, manga, cel-shaded art, or if the user asks for 'MeinaMix'.
   * `artistic` for fantasy illustrations, concept art, 3D character design, or if the user asks for 'DreamShaper'.
   * `auto` to let the local router infer the style from the prompt.
-- If the user explicitly mentions a model by name (e.g., 'use DreamShaper to make...', 'use Realistic Vision...', 'render with MeinaMix...'), honor their choice directly by setting the corresponding style.
+- If the user explicitly mentions a model by name (e.g., 'use DreamShaper...', 'use CyberRealistic...', 'render with MeinaMix...'), honor their choice directly by setting the corresponding style.
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""
@@ -424,6 +425,12 @@ async def run_agent_stream(
                                 "arguments": fn_args,
                                 "status": "running",
                             }
+                            if fn_name == "generate_visual_media":
+                                p_in = fn_args.get("prompt", "")
+                                st_in = fn_args.get("style", "auto")
+                                _, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(p_in, st_in)
+                                trace_entry["engine_label"] = engine_label
+                                trace_entry["summary"] = f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}"
                             yield {"type": "tool_start", "tool": trace_entry}
 
                             exec_res = await execute_tool_call(
@@ -470,11 +477,14 @@ async def run_agent_stream(
                                 "prompt": user_prompt,
                                 "media_type": fallback["intent"],
                             }
+                            _, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(user_prompt, "auto")
                             trace_entry = {
                                 "id": trace_id,
                                 "name": "generate_visual_media",
                                 "arguments": fn_args,
                                 "status": "running",
+                                "engine_label": engine_label,
+                                "summary": f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}",
                             }
                             yield {"type": "tool_start", "tool": trace_entry}
                             exec_res = await execute_tool_call(

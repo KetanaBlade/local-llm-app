@@ -351,11 +351,26 @@ export default function App() {
           } else if (ev.type === 'status') {
             setStreamStatus(ev.message)
           } else if (ev.type === 'tool_start') {
-            setStreamStatus(
-              ev.tool.name === 'generate_visual_media'
-                ? 'Rendering image on local GPU (DreamShaper 8)...'
-                : `Running tool: ${ev.tool.name}...`
-            )
+            const toolEngine = ev.tool?.engine_label;
+            const toolSummary = ev.tool?.summary;
+            let statusText = `Running tool: ${ev.tool.name}...`;
+            if (ev.tool.name === 'generate_visual_media') {
+              if (toolEngine) {
+                statusText = `Rendering image on local GPU (${toolEngine.split('(')[0].trim()})...`;
+              } else if (toolSummary) {
+                statusText = toolSummary;
+              } else {
+                const p = (ev.tool?.arguments?.prompt || '').toLowerCase();
+                const st = (ev.tool?.arguments?.style || '').toLowerCase();
+                const isPhoto = /photo|realistic|dslr|cyberrealistic/i.test(p) || st === 'photorealistic';
+                const isAnime = /anime|manga|waifu|meina/i.test(p) || st === 'anime';
+                const eng = isPhoto ? 'CyberRealistic V8' : isAnime ? 'MeinaMix V11' : 'DreamShaper 8';
+                statusText = `Rendering image on local GPU (${eng})...`;
+              }
+            } else if (toolSummary) {
+              statusText = toolSummary;
+            }
+            setStreamStatus(statusText);
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === tempAssistantId
@@ -669,7 +684,7 @@ export default function App() {
                     </h1>
                     <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
                       Chat naturally with <strong className="text-slate-200">{selectedModel}</strong>,
-                      generate real <strong className="text-slate-200">AI pictures (DreamShaper 8 GPU)</strong>,{' '}
+                      generate real <strong className="text-slate-200">AI pictures (Photorealism, Anime & DreamShaper)</strong>,{' '}
                       <strong className="text-slate-200">Excel spreadsheets (.xlsx)</strong>,{' '}
                       <strong className="text-slate-200">PDF / Word documents</strong>, or{' '}
                       <strong className="text-slate-200">interactive mini-apps</strong>.
@@ -681,10 +696,10 @@ export default function App() {
                     {[
                       {
                         title: 'Generate a Real AI Image',
-                        subtitle: 'Renders on your GPU with DreamShaper 8',
+                        subtitle: 'Renders on your GPU with Photorealism, Anime, or DreamShaper',
                         icon: ImageIcon,
                         prompt:
-                          'Generate an image of a cozy mountain cabin at sunset with warm glowing windows and snow-dusted pine trees.',
+                          'Generate a photorealistic portrait of an astronaut exploring a bioluminescent crystal cavern on an alien planet.',
                       },
                       {
                         title: 'Make a Custom Excel Spreadsheet',

@@ -30,6 +30,8 @@ ARTIFACTS_DIR = ROOT_DIR / "workspace" / "artifacts"
 
 async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode = WAL")
+        await db.execute("PRAGMA busy_timeout = 5000")
         await db.execute("PRAGMA secure_delete = ON")
         await db.execute(
             """
@@ -191,11 +193,31 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
             (conversation_id,),
         )
         msg_rows = await msg_cursor.fetchall()
+
+        # Cross-reference active artifacts that exist both in DB and on disk
+        art_cursor = await db.execute(
+            "SELECT id, filename FROM artifacts WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+        art_rows = await art_cursor.fetchall()
+        active_art_ids = {r["id"] for r in art_rows}
+        active_filenames = {r["filename"] for r in art_rows if r["filename"]}
+
         messages = []
         for r in msg_rows:
             d = dict(r)
             d["tool_calls"] = json.loads(d.get("tool_calls") or "[]")
-            d["artifacts"] = json.loads(d.get("artifacts") or "[]")
+            raw_arts = json.loads(d.get("artifacts") or "[]")
+            # Only retain artifacts that are still in the database AND exist on disk
+            valid_arts = []
+            for a in raw_arts:
+                if isinstance(a, dict):
+                    aid = a.get("id")
+                    fname = a.get("filename")
+                    fpath = ARTIFACTS_DIR / Path(fname).name if fname else None
+                    if (aid in active_art_ids or fname in active_filenames) and fpath and fpath.exists():
+                        valid_arts.append(a)
+            d["artifacts"] = valid_arts
             messages.append(d)
         res = dict(conv)
         res["messages"] = messages
@@ -266,14 +288,21 @@ async def delete_conversation(conversation_id: str) -> Dict[str, Any]:
 
 
 async def delete_artifact(artifact_id: str) -> Dict[str, Any]:
-    """Obliterate a single generated file from disk and SQLite."""
+    """Obliterate a single generated file from disk and SQLite, purging it from message history."""
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("PRAGMA secure_delete = ON")
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT filename FROM artifacts WHERE id = ?", (artifact_id,))
-        row = await cursor.fetchone()
-        if row and row["filename"]:
-            fpath = ARTIFACTS_DIR / Path(row["filename"]).name
+        cursor = await db.execute(
+            "SELECT id, filename FROM artifacts WHERE id = ? OR filename = ?",
+            (artifact_id, artifact_id),
+        )
+        rows = await cursor.fetchall()
+        target_ids = {r["id"] for r in rows}
+        target_ids.add(artifact_id)
+        target_filenames = {r["filename"] for r in rows if r["filename"]}
+
+        for fname in target_filenames:
+            fpath = ARTIFACTS_DIR / Path(fname).name
             if fpath.exists() and fpath.is_file():
                 try:
                     size = fpath.stat().st_size
@@ -284,9 +313,31 @@ async def delete_artifact(artifact_id: str) -> Dict[str, Any]:
                     fpath.unlink(missing_ok=True)
                 except Exception:
                     fpath.unlink(missing_ok=True)
-        await db.execute("DELETE FROM artifacts WHERE id = ?", (artifact_id,))
+
+        for tid in target_ids:
+            await db.execute("DELETE FROM artifacts WHERE id = ?", (tid,))
+        for fname in target_filenames:
+            await db.execute("DELETE FROM artifacts WHERE filename = ?", (fname,))
+
+        # Purge deleted artifact from all message history records
+        msg_cursor = await db.execute("SELECT id, artifacts FROM messages WHERE artifacts IS NOT NULL AND artifacts != '[]'")
+        msg_rows = await msg_cursor.fetchall()
+        for mr in msg_rows:
+            try:
+                arts = json.loads(mr["artifacts"] or "[]")
+                filtered = [
+                    a for a in arts
+                    if isinstance(a, dict) and a.get("id") not in target_ids and a.get("filename") not in target_filenames
+                ]
+                if len(filtered) != len(arts):
+                    await db.execute(
+                        "UPDATE messages SET artifacts = ? WHERE id = ?",
+                        (json.dumps(filtered), mr["id"]),
+                    )
+            except Exception:
+                pass
+
         await db.commit()
-        await db.execute("VACUUM")
     return {"status": "obliterated", "id": artifact_id}
 
 

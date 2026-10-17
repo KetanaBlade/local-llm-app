@@ -94,9 +94,9 @@ def list_available_sd_models() -> Dict[str, Dict[str, Any]]:
             if p.name.endswith(".part"):
                 continue
             name_lower = p.stem.lower()
-            if any(k in name_lower for k in ("realistic", "photo", "dslr", "real")):
+            if any(k in name_lower for k in ("cyberrealistic", "realistic", "photo", "dslr", "real")):
                 style = "photorealistic"
-                label = "Realistic Vision V5.1 (Photorealism)"
+                label = "CyberRealistic V8 (Photorealism)"
             elif any(k in name_lower for k in ("anime", "meina", "waifu", "manga", "animagine")):
                 style = "anime"
                 label = "MeinaMix V11 (Anime / Manga)"
@@ -136,7 +136,7 @@ def resolve_sd_model_and_prompts(
     # Check for direct model name mentions first
     if any(k in combined_query for k in ("meinamix", "meina mix", "meina")):
         target_style = "anime"
-    elif any(k in combined_query for k in ("realistic vision", "realisticvision", "realistic_vision")):
+    elif any(k in combined_query for k in ("cyberrealistic", "cyber realistic", "cyber_realistic", "realistic vision", "realisticvision", "realistic_vision")):
         target_style = "photorealistic"
     elif any(k in combined_query for k in ("dreamshaper", "dream shaper", "dream_shaper")):
         target_style = "artistic"
@@ -178,7 +178,7 @@ def resolve_sd_model_and_prompts(
             "concept art, sketch, airbrushed, cartoonish, blurry, low quality, deformed, "
             "watermark, text, signature, ugly, bad anatomy"
         )
-        engine_label = f"Realistic Vision V5.1 (Photorealism • {selected['filename']})"
+        engine_label = f"CyberRealistic V8 (Photorealism • {selected['filename']})"
     elif resolved_style == "anime":
         enhanced_prompt = f"{prompt}, masterpiece, best quality, ultra-detailed anime aesthetic, expressive eyes, vibrant colors, cinematic anime lighting"
         negative_prompt = (
