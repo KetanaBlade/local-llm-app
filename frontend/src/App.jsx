@@ -27,6 +27,8 @@ import {
   BookOpen,
   Moon,
   Power,
+  Square,
+  Gamepad2,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -102,6 +104,22 @@ export default function App() {
 
   const chatScrollContainerRef = useRef(null)
   const latestUserMsgRef = useRef(null)
+  const abortControllerRef = useRef(null)
+
+  const handleStopResponse = async () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+      abortControllerRef.current = null
+    }
+    setIsStreaming(false)
+    setStreamStatus('Response stopped.')
+    try {
+      await fetch('/api/chat/stop', { method: 'POST' })
+      await fetchSystemStatus()
+    } catch (e) {
+      console.error('Stop request failed:', e)
+    }
+  }
 
   const fetchSystemStatus = async () => {
     try {
@@ -321,6 +339,9 @@ export default function App() {
       setIsSleeping(false)
     }
 
+    const abortController = new AbortController()
+    abortControllerRef.current = abortController
+
     setIsStreaming(true)
     setStreamStatus(`Running on ${selectedModel}...`)
 
@@ -354,6 +375,7 @@ export default function App() {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: abortController.signal,
         body: JSON.stringify({
           conversation_id: activeConvId,
           prompt: text,
@@ -467,8 +489,13 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error('Stream error:', err)
+      if (err.name === 'AbortError') {
+        console.log('Chat generation stopped by user.')
+      } else {
+        console.error('Stream error:', err)
+      }
     } finally {
+      abortControllerRef.current = null
       setIsStreaming(false)
       setStreamStatus('')
     }
@@ -569,6 +596,22 @@ export default function App() {
                 {artifacts.length}
               </span>
             )}
+          </button>
+
+          {/* GAMING MODE / 0 GPU VRAM TOGGLE */}
+          <button
+            onClick={() => handleUpdateSetting({ gaming_mode: !settings?.gaming_mode })}
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
+              settings?.gaming_mode
+                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
+                : 'border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-300'
+            }`}
+            title="Gaming Mode: Offloads LLM models 100% to your 64GB System RAM so your RTX 4070 SUPER GPU retains 100% VRAM and 0% FPS drops for games."
+          >
+            <Gamepad2 className={`w-3.5 h-3.5 ${settings?.gaming_mode ? 'text-amber-400' : 'text-slate-400'}`} />
+            <span className="hidden xl:inline font-medium">
+              {settings?.gaming_mode ? 'Gaming: 0 VRAM' : 'Gaming Mode'}
+            </span>
           </button>
 
           {/* SLEEP MODE / 0 MB VRAM BUTTON */}
@@ -863,9 +906,22 @@ export default function App() {
                   })}
 
                   {streamStatus && (
-                    <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400 py-2">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
-                      <span>{streamStatus}</span>
+                    <div className="flex items-center justify-between gap-2.5 text-xs font-mono text-slate-400 py-2 px-3 rounded-lg bg-white/[0.03] border border-white/[0.05]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757] shrink-0" />
+                        <span className="truncate">{streamStatus}</span>
+                      </div>
+                      {isStreaming && (
+                        <button
+                          type="button"
+                          onClick={handleStopResponse}
+                          className="px-2.5 py-1 rounded-md bg-red-500/15 hover:bg-red-500/25 border border-red-500/35 text-red-300 font-sans text-xs font-medium flex items-center gap-1 shrink-0 transition"
+                          title="Stop response"
+                        >
+                          <Square className="w-2.5 h-2.5 fill-current text-red-400" />
+                          <span>Stop</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -958,20 +1014,26 @@ export default function App() {
                     </button>
                   </div>
 
-                  <button
-                    type="submit"
-                    disabled={isStreaming || !promptInput.trim()}
-                    className="h-8 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition"
-                  >
-                    {isStreaming ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <>
-                        <span>Send</span>
-                        <Send className="w-3 h-3" />
-                      </>
-                    )}
-                  </button>
+                  {isStreaming ? (
+                    <button
+                      type="button"
+                      onClick={handleStopResponse}
+                      className="h-8 px-3.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-medium text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      title="Stop generating response immediately"
+                    >
+                      <Square className="w-3 h-3 fill-current text-red-400" />
+                      <span>Stop</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={!promptInput.trim()}
+                      className="h-8 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition"
+                    >
+                      <span>Send</span>
+                      <Send className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
               </form>
             </div>
@@ -1289,6 +1351,37 @@ export default function App() {
                   className="h-9 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium shrink-0 transition"
                 >
                   {flushingVram ? 'Clearing VRAM...' : 'Clear GPU VRAM Now'}
+                </button>
+              </div>
+
+              {/* ZERO-VRAM GAMING MODE */}
+              <div className="p-4 rounded-xl bg-[#141821] border border-amber-500/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Gamepad2 className="w-4 h-4 text-amber-400" />
+                    <span className="text-xs font-semibold text-white">
+                      Zero-VRAM Gaming Mode
+                    </span>
+                    {settings?.gaming_mode && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono">
+                        ACTIVE
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Offloads 100% of LLM execution to your 64GB System RAM so games have full access to your GPU VRAM with zero FPS drops.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleUpdateSetting({ gaming_mode: !settings?.gaming_mode })}
+                  className={`h-9 px-3.5 rounded-lg text-xs font-medium shrink-0 transition ${
+                    settings?.gaming_mode
+                      ? 'bg-amber-500 text-black font-semibold'
+                      : 'bg-white/[0.08] hover:bg-white/[0.14] text-white border border-white/[0.1]'
+                  }`}
+                >
+                  {settings?.gaming_mode ? 'Disable Gaming Mode' : 'Enable Gaming Mode'}
                 </button>
               </div>
 

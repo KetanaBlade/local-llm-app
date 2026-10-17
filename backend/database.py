@@ -98,6 +98,7 @@ async def init_db() -> None:
             "default_model": "qwen2.5-coder:7b",
             "agent_mode": "antigravity",
             "auto_vram_handoff": "true",
+            "gaming_mode": "false",
         }
         for k, v in defaults.items():
             await db.execute(
@@ -119,6 +120,7 @@ async def get_settings() -> Dict[str, Any]:
             "default_model": raw.get("default_model", "qwen2.5-coder:7b"),
             "agent_mode": raw.get("agent_mode", "antigravity"),
             "auto_vram_handoff": raw.get("auto_vram_handoff", "true") == "true",
+            "gaming_mode": raw.get("gaming_mode", "false") == "true",
         }
 
 

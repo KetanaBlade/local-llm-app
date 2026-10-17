@@ -145,6 +145,7 @@ class SettingsUpdateRequest(BaseModel):
     default_model: Optional[str] = None
     agent_mode: Optional[str] = None
     auto_vram_handoff: Optional[bool] = None
+    gaming_mode: Optional[bool] = None
 
 
 class DirectToolRequest(BaseModel):
@@ -345,7 +346,7 @@ async def api_delete_artifact(artifact_id: str):
 
 
 @app.post("/api/chat/stream")
-async def api_chat_stream(req: ChatRequest):
+async def api_chat_stream(req: ChatRequest, request: Request):
     settings = await get_settings()
     hw = build_hardware_profile(override_profile=settings.get("hardware_profile_override", "auto"))
 
@@ -402,7 +403,11 @@ async def api_chat_stream(req: ChatRequest):
             hw_profile=hw,
             offline_mode=settings.get("air_gap_mode", True),
             chat_context=active_context,
+            gaming_mode=settings.get("gaming_mode", False),
         ):
+            if await request.is_disconnected():
+                await flush_ollama_vram()
+                break
             if ev["type"] == "done":
                 saved_msg = await add_message(
                     conversation_id=conv_id,
@@ -419,6 +424,15 @@ async def api_chat_stream(req: ChatRequest):
                 yield f"data: {json.dumps(ev)}\n\n"
 
     return StreamingResponse(sse_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/chat/stop")
+async def api_chat_stop():
+    """
+    Immediately stop ongoing generation and release any blocked Ollama inference locks.
+    """
+    await flush_ollama_vram()
+    return {"status": "stopped"}
 
 
 @app.post("/api/tools/execute")

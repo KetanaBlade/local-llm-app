@@ -24,6 +24,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
+from .hardware import detect_nvidia_gpu
 from .tools import (
     get_tool_schemas,
     resolve_sd_model_and_prompts,
@@ -368,15 +369,36 @@ async def run_agent_stream(
     hw_profile: Dict[str, Any],
     offline_mode: bool = True,
     chat_context: str = "",
+    gaming_mode: bool = False,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     await ensure_ollama_running()
     # Ensure no other model is simultaneously hogging VRAM alongside `model`
     await flush_ollama_vram(except_model=model)
+
+    gpu_info = detect_nvidia_gpu()
+    free_vram_gb = gpu_info.get("vram_free_gb", 12.0) if gpu_info else 12.0
+    auto_game_active = (free_vram_gb < 4.5)
+    use_cpu_ram = gaming_mode or auto_game_active
+
     tuning = hw_profile.get("tuning", {})
     num_ctx = tuning.get("recommended_num_ctx", 8192)
     keep_alive = tuning.get("keep_alive", "10m")
     vram_handoff = tuning.get("vram_handoff_before_media", True)
     allow_web_search = not offline_mode
+
+    if use_cpu_ram:
+        # Offload 100% of LLM to 64GB System RAM so running games have full GPU VRAM
+        num_ctx = min(num_ctx, 4096)
+        ollama_options: Dict[str, Any] = {"num_ctx": num_ctx, "num_gpu": 0, "temperature": 0.3}
+        stream_options: Dict[str, Any] = {"num_ctx": num_ctx, "num_gpu": 0}
+        keep_alive = 0
+        probe_timeout = 25.0
+        reason = "🎮 Gaming Mode active" if gaming_mode else f"🎮 Auto-VRAM Guard active ({free_vram_gb:.1f}GB free)"
+        yield {"type": "status", "message": f"{reason} • Offloading {model} to 64GB System RAM (0% GPU VRAM)..."}
+    else:
+        ollama_options = {"num_ctx": num_ctx, "temperature": 0.3}
+        stream_options = {"num_ctx": num_ctx}
+        probe_timeout = 30.0
 
     sys_prompt = SYSTEM_PROMPT_AGENT if mode == "agent" else SYSTEM_PROMPT_CHAT
     # 1. Date Grounding (inspired by Odysseus): stops models from defaulting to historical training-cutoff years
@@ -407,7 +429,7 @@ async def run_agent_stream(
         yield {"type": "status", "message": f"Thinking with {model}..."}
         try:
             active_schemas = get_tool_schemas(allow_web_search=allow_web_search)
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=probe_timeout) as client:
                 probe_resp = await client.post(
                     f"{OLLAMA_BASE}/api/chat",
                     json={
@@ -416,7 +438,7 @@ async def run_agent_stream(
                         "tools": active_schemas,
                         "stream": False,
                         "keep_alive": keep_alive,
-                        "options": {"num_ctx": num_ctx, "temperature": 0.3},
+                        "options": ollama_options,
                     },
                 )
                 if probe_resp.status_code == 200:
@@ -615,7 +637,7 @@ async def run_agent_stream(
                     "messages": ollama_messages,
                     "stream": True,
                     "keep_alive": keep_alive,
-                    "options": {"num_ctx": num_ctx},
+                    "options": stream_options,
                 },
             ) as resp:
                 if resp.status_code != 200:
