@@ -1,6 +1,6 @@
 # Local AI Studio — Universal On-Device Workstation
 
-A 100% private, zero-telemetry, air-gapped local AI studio that combines a responsive conversational web interface with an autonomous **Antigravity Agent Engine**. Capable of generating live neural images, production-grade Excel spreadsheets (`.xlsx`) with formulas, formatted PDF/Word documents, interactive HTML/JS applications, and executing Python in a sandboxed runtime—completely on-device.
+A 100% private, zero-telemetry, air-gapped local AI studio that combines a responsive conversational web interface with an autonomous **Antigravity Agent Engine**. Capable of generating live neural images (SD 1.5 & SDXL), production-grade Excel spreadsheets (`.xlsx`) with formulas, formatted PDF/Word documents, interactive HTML/JS applications, deep web research with residential IP bot-shielding, and executing Python in a sandboxed runtime—completely on-device.
 
 ---
 
@@ -10,7 +10,7 @@ A 100% private, zero-telemetry, air-gapped local AI studio that combines a respo
                           ┌────────────────────────────────────────────────────────┐
                           │                Client Presentation Tier                │
                           │   React 18 + Tailwind CSS + Lucide Icons + Vite        │
-                          │   (Desktop Web Browser / Frameless Edge App / Mobile)  │
+                          │   (Desktop Web Browser / Frameless App / Mobile Wi-Fi) │
                           └───────────────────────────┬────────────────────────────┘
                                                       │ HTTP / SSE Stream
                                                       ▼
@@ -26,50 +26,66 @@ A 100% private, zero-telemetry, air-gapped local AI studio that combines a respo
 ┌───────────────────────────┐ ┌───────────────────────────┐ ┌───────────────────────────┐ ┌───────────────────────────┐
 │     Ollama LLM Engine     │ │   Stable Diffusion.cpp    │ │  SQLite Database Layer    │ │   Agent Tools & Sandbox   │
 │   (Port 11434 Daemon)     │ │     (sd-cli / Vulkan)     │ │    (WAL Mode + Secure     │ │  - openpyxl (Excel .xlsx) │
-│ - Llama 3.2 / Qwen 2.5    │ │ - CyberRealistic V8       │ │       Obliteration)       │ │  - reportlab / python-docx│
-│ - Hardware-Tuned num_ctx  │ │ - MeinaMix V11 (Anime)    │ │ - Conversations & Context │ │  - Python Execution Box   │
-│ - Zero-VRAM Auto-Eviction │ │ - DreamShaper 8 (Art)     │ │ - Artifact Tracking       │ │  - Workspace Confinement  │
+│ - Llama 3.2 / Hermes 3    │ │ - SD 1.5 & SDXL Checkpoints│ │       Obliteration)       │ │  - reportlab / python-docx│
+│ - Hardware-Tuned num_ctx  │ │ - Embedded Metadata Parser│ │ - Conversations & Context │ │  - Python Execution Box   │
+│ - Zero-VRAM Auto-Eviction │ │ - Dynamic Style Routing   │ │ - Artifact Tracking       │ │  - Deep Shielded Search   │
 └───────────────────────────┘ └───────────────────────────┘ └───────────────────────────┘ └───────────────────────────┘
+                                                                                                     │
+                                                      ┌──────────────────────────────────────────────┴───────────┐
+                                                      ▼                                                          ▼
+                                      ┌───────────────────────────────┐                          ┌───────────────────────────────┐
+                                      │   Jina Cloud Reader Proxy     │                          │    Brave API / DuckDuckGo     │
+                                      │   (r.jina.ai - Remote Cluster)│                          │    (Keyword Search Engine)    │
+                                      │   - Residential IP Hidden     │                          │    - Query De-Noising         │
+                                      │   - Cloudflare/Bot-Shielded   │                          │    - Untrusted XML Boundary   │
+                                      └───────────────────────────────┘                          └───────────────────────────────┘
 ```
 
 ---
 
 ## Key Capabilities & Features
 
-### 1. Multi-Model Neural Diffusion Router
-Directly runs quantized Stable Diffusion checkpoints on local GPU VRAM via Vulkan compute:
-* **CyberRealistic V8 FP16** (`CyberRealistic_V8_FP16.safetensors` • 1.99 GB): Tailored for DSLR photographic textures, human skin realism, macro shots, and realistic lighting with negative photographic prompts.
-* **MeinaMix V11** (`meinamix_meinaV11.safetensors` • 1.99 GB): Fine-tuned anime, manga, and digital illustrative art.
-* **DreamShaper 8** (`DreamShaper_8_pruned.safetensors` • 1.99 GB): Concept art, fantasy character designs, and 3D stylized landscapes.
-* **Intelligent Aesthetic Router**: Evaluates user prompts (or explicit requests like *"Use CyberRealistic..."* or *"Draw an anime character with MeinaMix..."*) and routes to the matching engine, dynamically tailoring positive and negative prompt embeddings.
-* **Real-time Status Streaming**: Emits live engine metadata over SSE so the UI displays the exact model actively rendering on your GPU.
+### 1. Deep Web Search & Residential IP Bot-Shielding
+Upgrades local search from shallow truncated snippets into deep article research with full protection against bot-flagging:
+* **Zero Residential IP Exposure (Jina Reader Proxy)**: When reading web articles, Local AI Studio never connects directly to target websites from your home IP. Instead, article markdown is fetched via remote Jina Reader cloud proxies (`https://r.jina.ai/<url>`). Target sites only see remote data center clusters—your residential IP address remains 100% hidden, eliminating any risk of Cloudflare, Akamai, or bot blacklisting.
+* **Dual Indexing Engines**:
+  * **Out-of-the-Box Mode (Default)**: Uses DuckDuckGo search via authentic browser POST submissions with automatic `/l/?uddg=` destination redirect unquoting and Lite fallback. Zero setup, zero API keys required.
+  * **Official Brave Search API (Optional)**: Free integration with the official Brave Search API (`api.search.brave.com`, 2,000 free queries/month). Easily configured via the Hardware & Settings modal with one-click key visibility toggle.
+* **Odysseus Anti-Injection Boundaries**: Retrieved web contents are quarantined inside `<untrusted_web_source>` tags with explicit agent rules preventing **indirect prompt injection** attacks from untrusted websites.
+* **Query De-Noising & Cookie Scrubbing**: Conversational filler (*"can you search online for..."*) is stripped before querying, and cookie banners, newsletter overlays, and paywalls are filtered out before reaching context.
+* **Interactive Source Chips `[1]`, `[2]`**: Responses ground facts in numbered source citations, with one-click chips that open original articles in a new tab.
+* **Strict Air-Gap Switch**: When "Offline" mode is active, all outgoing web requests are blocked at the engine root.
 
-### 2. Autonomous Agent & Document Synthesis
+### 2. Multi-Model Neural Diffusion & SDXL Engine
+Directly runs quantized Stable Diffusion checkpoints on your local GPU via Vulkan compute:
+* **Safetensors Metadata Inspector**: Inspects embedded `modelspec.title` and tensor headers directly on disk to extract authentic checkpoint names, base architecture (SD 1.5 vs. SDXL), and recommended resolutions (512×512 or 1024×1024).
+* **SDXL Support**: Native support for high-resolution SDXL checkpoints (e.g. Pony Diffusion V6 XL) running at native 1024×1024 resolution.
+* **Dynamic Style Selector**: The image composer dropdown automatically populates from all installed checkpoints in `models/image/`, letting you select models like CyberRealistic, MeinaMix, DreamShaper, or Pony Diffusion with zero prompt refusal.
+* **Direct Image Mode**: Dedicated toggle in the composer that routes prompts directly to local diffusion on your GPU, completely bypassing LLM parsing and moralizing refusals.
+
+### 3. Model Hub & Storage Reclaimer
+* **Dual-Tab Hub**: Separate tabs for **Conversational LLMs** and **Image Models** in the Model Hub modal.
+* **One-Click Deletion**: Safely delete unused Ollama LLMs or large diffusion checkpoints (`.safetensors`) directly from the UI to reclaim tens of gigabytes of disk space.
+* **Progress Tracking**: Real-time progress bars for Ollama pulls and direct HTTP checkpoint downloads with automatic rename handling.
+
+### 4. Autonomous Agent & Document Synthesis
 Equipped with native tool-calling capabilities that stream structured artifacts straight to the user:
 * **Excel Spreadsheets (`.xlsx`)**: Generates real spreadsheets with alternating header styles, column width auto-fitting, number formatting, and functional dynamic formulas (`=SUM()`, `=AVERAGE()`).
 * **Reports & Documents (`.pdf`, `.docx`)**: Formats clean typography reports, invoices, and executive summaries with download buttons and inline previews.
 * **Interactive Web Apps (`.html`)**: Generates standalone single-file interactive tools (calculators, simulators, dashboard widgets) rendered in a sandboxed `<iframe>`.
-* **Python Execution Sandbox**: Runs local Python scripts for computational tasks, mathematics, and data transformation within a confined working directory.
-* **Optional DuckDuckGo Web Search**: User-controlled toggle between strict **Offline-Only / Air-Gap Mode** and live DuckDuckGo web synthesis with citation badges.
+* **Python Execution Sandbox**: Runs local Python scripts for computational tasks, mathematics, and data transformation within a strictly confined working directory (`confine_to_workspace()`).
 
-### 3. Odysseus-Inspired Reliability & Confinement
-Incorporates core lessons from production agent architectures:
-* **Path Confinement Boundary**: Strict traversal defenses (`confine_to_workspace()`) intercepting relative path escapes (`../../`), absolute root redirects, and NUL byte injections before any file I/O occurs.
-* **Dynamic Date & Temporal Grounding**: Injects real-world calendar grounding into agent system prompts, preventing LLMs from assuming historic cutoff years for schedules, budgets, and current plans.
-* **Cursor-Style Context Auto-Compaction**: Calculates running token estimates and compacts older conversation history into summarized anchors while preserving recent conversational turns verbatim.
+### 5. Zero-VRAM Gaming Mode & Hardware Auto-Tuner
+* **Zero-VRAM Gaming Mode**: Offloads 100% of LLM execution to your system RAM (e.g. 64GB DDR5) so your discrete GPU (RTX 4070 SUPER) retains 100% dedicated VRAM and 0 FPS drops for modern games.
+* **Sleep Mode (0 MB VRAM)**: One-click header button (`Sleep (0 VRAM)`) sends `keep_alive: 0` to Ollama and evicts all LLM and diffusion checkpoints from GPU memory. Automatically reloads models in ~1–2 seconds upon sending your next prompt.
+* **Hardware Profiler**: Auto-detects host hardware at startup:
+  * **Desktop**: NVIDIA RTX 4070 SUPER (12GB VRAM) + 64GB RAM — tunes for large context (`16,384`), CUDA Tensor acceleration, and strict VRAM handoff before diffusion.
+  * **Laptop**: Intel Core Ultra 258V Lunar Lake + Arc 140V iGPU + AI Boost NPU + 32GB Shared RAM — tunes for unified memory and Mixture-of-Experts (MoE) models.
 
-### 4. Zero-VRAM Sleep Mode & Server Lifecycle
-* **Sleep Mode (0 MB VRAM)**: One-click header button (`Sleep (0 VRAM)`) sends `keep_alive: 0` to Ollama and evicts all LLM and diffusion checkpoints from GPU memory. Frees 100% of your VRAM for gaming or video rendering. Automatically reloads models in ~1–2 seconds upon sending your next prompt.
-* **In-App Shutdown**: Clean power-off button in the UI terminates background server processes and flushes all memory handles.
-* **Single-Instance Windows Launcher (`launcher.py` / `Launch-Studio.vbs`)**: Double-clicking the desktop shortcut tests port 8000. If the server is already active, it simply opens the application window without spinning up duplicate background processes. Opens Microsoft Edge / Chrome in native `--app=http://localhost:8000` mode (frameless, zero address bar clutter).
-
-### 5. Universal Hardware Auto-Tuner
-Auto-inspects host silicon at startup and selects optimized runtime parameters:
-
-| Profile | Hardware Environment | Auto-Tuned Strategy |
-| :--- | :--- | :--- |
-| **Desktop Workstation** | **NVIDIA RTX 4070 SUPER (12GB GDDR6X)** + 64GB RAM | `16,384` context window, CUDA Tensor Core acceleration, automated VRAM handoff before diffusion generation. Recommends `qwen2.5-coder:7b`, `llama3.2:3b`, `qwen2.5-coder:14b`. |
-| **Thin & Light AI Laptop** | **Intel Core Ultra 258V** + **Intel Arc 140V iGPU** + **Intel AI Boost NPU (47 TOPS)** + 32GB RAM | Detects unified memory pool, selects `12,288` context window with `q8_0` KV cache, enables 5-minute idle unload for battery conservation, and recommends `qwen3:30b-a3b` MoE or `llama3.2:3b`. |
+### 6. Mobile-First & WCAG 2.1 AA Accessibility
+* **Touch-First Ergonomics**: All interactive buttons, dropdowns, and toggles adhere to a minimum touch target size of **44×44px** with `touch-action: manipulation;`.
+* **Mobile Tap-to-Focus**: Root layout allows unrestricted text selection (`-webkit-user-select: text !important;`) ensuring immediate tap-to-focus on mobile textareas without keyboard dismissal conflicts.
+* **Semantic ARIA Accordions**: Replaces generic divs with accessible `<button type="button">` accordions for tool traces and thinking drawers.
 
 ---
 
@@ -80,32 +96,33 @@ Local AI App/
 ├── backend/
 │   ├── __init__.py
 │   ├── agent.py            # Agent orchestrator, prompt compilation, SSE streaming & tool execution
-│   ├── database.py         # aiosqlite layer (WAL mode, secure deletion, message history & artifact storage)
+│   ├── database.py         # aiosqlite layer (WAL mode, secure deletion, message history & settings)
 │   ├── hardware.py         # Hardware telemetry, silicon detection, and profile auto-tuning
 │   ├── main.py             # FastAPI application, REST endpoints, LAN guard middleware, and static server
-│   └── tools.py            # Multi-model diffusion router, openpyxl/reportlab builders, workspace boundary
+│   └── tools.py            # Shielded search engine, diffusion router, openpyxl/reportlab builders
 ├── frontend/
 │   ├── dist/               # Production compiled bundle served by FastAPI
 │   ├── src/
-│   │   ├── App.jsx         # Primary React 18 application component (WCAG AA, mobile-first responsive)
-│   │   ├── index.css       # Custom scrollbars, prose typography, and Tailwind definitions
+│   │   ├── App.jsx         # Primary React 18 component (WCAG AA, mobile-first responsive)
+│   │   ├── index.css       # Custom scrollbars, touch ergonomics, and typography
 │   │   └── main.jsx        # React root entrypoint
 │   ├── package.json        # Frontend dependencies (Lucide icons, Tailwind, Vite, marked)
 │   └── vite.config.js      # Vite build configuration
-├── bin/                    # (Ignored in git) Pre-compiled sd-cli.exe Vulkan binary
-├── models/image/           # (Ignored in git) Local diffusion checkpoints (.safetensors)
+├── bin/                    # Pre-compiled sd-cli.exe Vulkan binary (git ignored)
+├── models/image/           # Local diffusion checkpoints (.safetensors) (git ignored)
 ├── workspace/
-│   ├── artifacts/          # (Ignored in git) Generated files, images, spreadsheets, and PDFs
-│   └── projects/           # (Ignored in git) Multi-file projects created by the agent
+│   ├── artifacts/          # Generated files, images, spreadsheets, and PDFs (git ignored)
+│   └── projects/           # Multi-file projects created by the agent (git ignored)
 ├── scripts/
-│   └── download_image_models.py # Helper script to fetch CyberRealistic V8 and MeinaMix checkpoints
+│   └── download_image_models.py # Helper script to fetch initial checkpoints
 ├── tests/
-│   └── test_learnings.py   # Unit test suite verifying confinement, router, and context compaction
+│   ├── test_learnings.py   # Unit test suite verifying confinement, router, and context compaction
+│   └── test_search_live.py # Integration test verifying air-gap block and shielded web search
 ├── Launch-Studio.bat       # Windows batch launcher
 ├── Launch-Studio.vbs       # Silent background VBScript launcher (no flashing CMD window)
 ├── launcher.py             # Single-instance process manager and frameless browser app launcher
-├── create_desktop_shortcut.ps1 # Script that creates 'Local AI Studio.lnk' on the Windows Desktop
 ├── requirements.txt        # Python backend dependencies
+├── AI_GUIDELINES.md        # Core engineering principles (Mobile-First, WCAG AA, Privacy, Git Hygiene)
 └── README.md               # Project documentation
 ```
 
@@ -131,7 +148,7 @@ Install Python dependencies:
 pip install -r requirements.txt
 ```
 
-Install frontend dependencies and build:
+Install frontend dependencies and compile production bundle:
 ```bash
 cd frontend
 npm install
@@ -139,20 +156,16 @@ npm run build
 cd ..
 ```
 
-### 2. Pull Recommended Base Models
-Start Ollama and pull standard models:
+### 2. Pull Recommended Models
+Start Ollama and pull fast, capable models:
 ```bash
 ollama pull llama3.2:3b
+ollama pull hermes3:8b
 ollama pull qwen2.5-coder:7b
 ```
 
-Download diffusion checkpoints (optional, for image generation):
-```bash
-python scripts/download_image_models.py
-```
-
-### 3. Launching the App
-**Via Desktop Launcher (Windows):**
+### 3. Launching the Studio
+**Via Desktop Shortcut / Silent Launcher:**
 Double-click `Launch-Studio.vbs` or run:
 ```bash
 python launcher.py
@@ -162,21 +175,23 @@ python launcher.py
 ```bash
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
-Open [http://localhost:8000](http://localhost:8000) in your browser.
+Open [http://localhost:8000](http://localhost:8000) or open `http://<your-lan-ip>:8000` from your phone over local Wi-Fi.
 
 ---
 
 ## Running Automated Tests
 
-Run the test suite verifying path boundary security, temporal grounding, diffusion model resolution, and artifact lifecycle management:
+Run the test suite verifying path boundary security, temporal grounding, diffusion model resolution, and air-gapped web search:
 
 ```bash
 python -u tests/test_learnings.py
+python -u tests/test_search_live.py
 ```
 
 ---
 
 ## Git & Privacy Hygiene
 
-* **Zero Data Leakage**: All `.db`, `.sqlite3`, `.db-wal`, `workspace/artifacts/`, `workspace/projects/`, and `models/` files are explicitly excluded by `.gitignore`.
-* **Zero External Telemetry**: The application sends zero tracking pings, metrics, or logs to external servers. All inference and artifact generation executes 100% locally.
+* **Zero External Telemetry**: No third-party analytics, external fonts, or cloud telemetry.
+* **Residential IP Protection**: All web queries use Jina cloud reader proxies so target websites never log your home residential IP.
+* **Zero Repository Pollution**: All `.db`, `.sqlite3`, `.db-wal`, `workspace/artifacts/`, and `models/` files are strictly excluded by `.gitignore`.
