@@ -609,14 +609,15 @@ export default function App() {
   }
 
   return (
-    <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-[#0A0B0E] text-[#F3F4F6] select-none overflow-hidden">
+    <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-[#0A0B0E] text-[#F3F4F6] overflow-hidden">
       {/* PINNED TOP HEADER BAR (Never scrolls out of view on mobile) */}
       <header className="h-13 sm:h-14 shrink-0 border-b border-white/[0.075] bg-[#0D0F14] px-3 lg:px-5 flex items-center justify-between gap-2 z-30">
         <div className="flex items-center gap-2.5 min-w-0">
           <button
+            type="button"
             onClick={() => setLeftSidebarOpen((v) => !v)}
             aria-label="Toggle Chat History Sidebar"
-            className="h-9 w-9 shrink-0 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] flex items-center justify-center text-slate-300 transition"
+            className="h-9 w-9 shrink-0 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] flex items-center justify-center text-slate-300 transition cursor-pointer"
             title="Show/Hide Chat History"
           >
             <PanelLeft className="w-4 h-4" />
@@ -634,8 +635,9 @@ export default function App() {
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
+            type="button"
             onClick={() => setHwModalOpen(true)}
-            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-1.5 text-xs transition"
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-1.5 text-xs transition cursor-pointer"
             title="View PC / Laptop Hardware Settings"
           >
             <Cpu className="w-3.5 h-3.5 text-[#D97757]" />
@@ -645,8 +647,9 @@ export default function App() {
           </button>
 
           <button
+            type="button"
             onClick={() => setMobileModalOpen(true)}
-            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition"
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition cursor-pointer"
             title="Open on your Phone over Home Wi-Fi"
           >
             <Smartphone className="w-3.5 h-3.5 text-[#D97757]" />
@@ -654,13 +657,14 @@ export default function App() {
           </button>
 
           <button
+            type="button"
             onClick={() => {
               if (!selectedArtifact && artifacts.length > 0) {
                 setSelectedArtifact(artifacts[0])
               }
               setFilePanelOpen((v) => !v)
             }}
-            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
               filePanelOpen
                 ? 'border-[#D97757]/50 bg-[#D97757]/15 text-white'
                 : 'border-white/[0.08] bg-[#14171F] text-slate-300 hover:bg-[#1B1F2A]'
@@ -678,8 +682,9 @@ export default function App() {
 
           {/* GAMING MODE / 0 GPU VRAM TOGGLE */}
           <button
+            type="button"
             onClick={() => handleUpdateSetting({ gaming_mode: !settings?.gaming_mode })}
-            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
               settings?.gaming_mode
                 ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
                 : 'border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-300'
@@ -694,9 +699,10 @@ export default function App() {
 
           {/* SLEEP MODE / 0 MB VRAM BUTTON */}
           <button
+            type="button"
             onClick={toggleSleepMode}
             disabled={sleepingLoading}
-            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
               isSleeping
                 ? 'border-cyan-500/50 bg-cyan-500/15 text-cyan-200'
                 : 'border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-300'
@@ -715,8 +721,9 @@ export default function App() {
 
           {/* POWER OFF / QUIT SERVER BUTTON */}
           <button
+            type="button"
             onClick={() => setShutdownModalOpen(true)}
-            className="h-9 w-9 rounded-lg border border-red-500/20 bg-red-500/10 hover:bg-red-500/25 text-red-400 flex items-center justify-center transition shrink-0"
+            className="h-9 w-9 rounded-lg border border-red-500/20 bg-red-500/10 hover:bg-red-500/25 text-red-400 flex items-center justify-center transition shrink-0 cursor-pointer"
             title="Close Server: Cleanly terminates the backend process and releases all system resources."
           >
             <Power className="w-3.5 h-3.5" />
@@ -736,7 +743,7 @@ export default function App() {
 
         {/* LEFT SIDEBAR: YOUR CHATS */}
         {leftSidebarOpen && (
-          <aside className="fixed lg:static inset-y-0 left-0 w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-40 select-none">
+          <aside className="fixed lg:static inset-y-0 left-0 w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-40">
             <div className="p-3 space-y-4 overflow-y-auto flex-1">
               <div className="flex items-center gap-2">
                 <button
@@ -841,9 +848,11 @@ export default function App() {
             <div className="max-w-3xl mx-auto space-y-5">
               {/* BACKGROUND CONTEXT BOX AT THE START OF EVERY CHAT */}
               <div className="rounded-xl bg-[#10131B] border border-white/[0.08] overflow-hidden">
-                <div
+                <button
+                  type="button"
                   onClick={() => setContextExpanded((v) => !v)}
-                  className="px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-white/[0.02] transition"
+                  className="w-full px-3.5 py-3 flex items-center justify-between cursor-pointer hover:bg-white/[0.02] transition text-left"
+                  aria-expanded={contextExpanded}
                 >
                   <div className="flex items-center gap-2 min-w-0">
                     <BookOpen className="w-4 h-4 text-[#D97757] shrink-0" />
@@ -869,7 +878,7 @@ export default function App() {
                       <ChevronRight className="w-3.5 h-3.5" />
                     )}
                   </div>
-                </div>
+                </button>
 
                 {contextExpanded && (
                   <div className="px-3.5 pb-3.5 pt-1.5 border-t border-white/[0.06] space-y-2">
@@ -1043,14 +1052,14 @@ export default function App() {
                 />
 
                 <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-white/[0.06]">
-                  <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto">
+                  <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto py-0.5">
                     {/* Single Model Picker */}
                     <div className="relative shrink-0">
                       <select
                         aria-label="Choose AI Model"
                         value={selectedModel}
                         onChange={(e) => handleSwitchModel(e.target.value)}
-                        className="h-8 pl-2 pr-6 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-[11px] sm:text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
+                        className="h-9 pl-2.5 pr-7 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
                       >
                         {installedModels.map((m) => (
                           <option key={m.id} value={m.id}>
@@ -1058,14 +1067,14 @@ export default function App() {
                           </option>
                         ))}
                       </select>
-                      <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
 
                     {/* Dedicated Direct Image Gen Mode Button */}
                     <button
                       type="button"
                       onClick={() => setImageGenMode((v) => !v)}
-                      className={`h-8 px-2.5 rounded-lg border text-[11px] sm:text-xs font-medium flex items-center gap-1.5 shrink-0 transition ${
+                      className={`h-9 px-3 rounded-lg border text-xs font-medium flex items-center gap-1.5 shrink-0 transition cursor-pointer ${
                         imageGenMode
                           ? 'border-purple-500/60 bg-purple-500/20 text-purple-200 shadow-sm shadow-purple-500/20'
                           : 'border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-slate-300'
@@ -1087,7 +1096,7 @@ export default function App() {
                           aria-label="Choose Image Engine or Checkpoint"
                           value={imageGenStyle}
                           onChange={(e) => setImageGenStyle(e.target.value)}
-                          className="h-8 pl-2 pr-6 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-[11px] sm:text-xs font-medium text-purple-200 appearance-none cursor-pointer transition max-w-[210px] truncate"
+                          className="h-9 pl-2.5 pr-7 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-xs font-medium text-purple-200 appearance-none cursor-pointer transition max-w-[210px] truncate"
                         >
                           <option value="auto">🎯 Auto (Smart Style)</option>
                           {imageModels.map((im) => (
@@ -1096,17 +1105,17 @@ export default function App() {
                             </option>
                           ))}
                         </select>
-                        <ChevronDown className="w-3 h-3 text-purple-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <ChevronDown className="w-3.5 h-3.5 text-purple-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
                     )}
 
                     <button
                       type="button"
                       onClick={() => setModelModalOpen(true)}
-                      className="h-8 px-2 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-[11px] sm:text-xs text-slate-300 flex items-center gap-1 shrink-0 transition"
+                      className="h-9 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1 shrink-0 transition cursor-pointer"
                       title="Download or switch models"
                     >
-                      <Sparkles className="w-3 h-3 text-[#D97757]" />
+                      <Sparkles className="w-3.5 h-3.5 text-[#D97757]" />
                       <span className="hidden sm:inline">+ Models</span>
                     </button>
 
@@ -1115,7 +1124,7 @@ export default function App() {
                       onClick={() =>
                         handleUpdateSetting({ air_gap_mode: !isOfflineOnly })
                       }
-                      className={`h-8 px-2 rounded-lg border text-[11px] sm:text-xs flex items-center gap-1 shrink-0 transition ${
+                      className={`h-9 px-2.5 rounded-lg border text-xs flex items-center gap-1 shrink-0 transition cursor-pointer ${
                         isOfflineOnly
                           ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                           : 'border-sky-500/30 bg-sky-500/10 text-sky-300'
@@ -1123,12 +1132,12 @@ export default function App() {
                     >
                       {isOfflineOnly ? (
                         <>
-                          <Lock className="w-3 h-3" />
+                          <Lock className="w-3.5 h-3.5" />
                           <span>Offline</span>
                         </>
                       ) : (
                         <>
-                          <Globe className="w-3 h-3" />
+                          <Globe className="w-3.5 h-3.5" />
                           <span>Web On</span>
                         </>
                       )}
@@ -1139,17 +1148,27 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleStopResponse}
-                      className="h-8 px-3.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-medium text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      onPointerDown={(e) => {
+                        e.preventDefault()
+                        handleStopResponse()
+                      }}
+                      className="h-9 px-3.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-medium text-xs flex items-center gap-1.5 shrink-0 transition cursor-pointer"
                       title="Stop generating response immediately"
                     >
-                      <Square className="w-3 h-3 fill-current text-red-400" />
+                      <Square className="w-3.5 h-3.5 fill-current text-red-400" />
                       <span>Stop</span>
                     </button>
                   ) : (
                     <button
                       type="submit"
                       disabled={!promptInput.trim()}
-                      className={`h-8 px-3.5 rounded-lg text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition disabled:opacity-40 ${
+                      onPointerDown={(e) => {
+                        if (promptInput.trim()) {
+                          e.preventDefault()
+                          handleSendPrompt()
+                        }
+                      }}
+                      className={`h-9 min-w-[56px] px-3.5 rounded-lg text-white font-medium text-xs flex items-center justify-center gap-1.5 shrink-0 transition cursor-pointer disabled:opacity-40 ${
                         imageGenMode
                           ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-sm shadow-purple-600/30'
                           : 'bg-[#D97757] hover:bg-[#E4886A]'
@@ -1158,12 +1177,12 @@ export default function App() {
                       {imageGenMode ? (
                         <>
                           <span>Render</span>
-                          <Sparkles className="w-3 h-3 text-purple-200" />
+                          <Sparkles className="w-3.5 h-3.5 text-purple-200" />
                         </>
                       ) : (
                         <>
                           <span>Send</span>
-                          <Send className="w-3 h-3" />
+                          <Send className="w-3.5 h-3.5" />
                         </>
                       )}
                     </button>
@@ -1328,7 +1347,8 @@ export default function App() {
                   </div>
                   <div className="space-y-1.5">
                     {artifacts.map((art) => (
-                      <div
+                      <button
+                        type="button"
                         key={art.id}
                         onClick={() => {
                           setSelectedArtifact(art)
@@ -1356,7 +1376,7 @@ export default function App() {
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -2079,9 +2099,11 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
               key={tc.id}
               className="rounded-lg bg-[#121620] border border-white/[0.08] px-3 py-2 text-xs font-mono"
             >
-              <div
+              <button
+                type="button"
                 onClick={() => setToolsOpen((v) => !v)}
-                className="flex items-center justify-between cursor-pointer gap-2"
+                className="w-full flex items-center justify-between cursor-pointer gap-2 text-left"
+                aria-expanded={toolsOpen}
               >
                 <div className="flex items-center gap-2 min-w-0">
                   {tc.status === 'running' ? (
@@ -2097,7 +2119,7 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
                 <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
                   {tc.duration_ms ? `${tc.duration_ms}ms` : 'running...'}
                 </span>
-              </div>
+              </button>
               {toolsOpen && (
                 <pre className="mt-2 pt-2 border-t border-white/[0.06] text-[11px] text-slate-400 overflow-x-auto">
                   {JSON.stringify(tc.arguments, null, 2)}
@@ -2121,6 +2143,8 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
           {msg.artifacts.map((art) => (
             <div
               key={art.id}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelectArtifact(art)}
               className="p-3 rounded-lg bg-[#141822] hover:bg-[#1A202E] border border-[#D97757]/35 cursor-pointer flex items-center justify-between gap-2 transition"
             >

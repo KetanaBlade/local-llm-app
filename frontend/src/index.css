@@ -32,6 +32,25 @@
     outline: 2px solid #D97757;
     outline-offset: 2px;
   }
+
+  /* Mobile touch ergonomics: remove double-tap delay and allow instant tap response */
+  button,
+  input,
+  textarea,
+  select,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* Prevent iOS Safari / Android from blocking tap-to-focus on textareas and inputs */
+  input,
+  textarea,
+  [contenteditable="true"] {
+    -webkit-user-select: text !important;
+    user-select: text !important;
+  }
 }
 
 .tabular-nums {
