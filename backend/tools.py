@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import math
 import mimetypes
 import os
 import platform
 import random
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -78,12 +80,61 @@ def _slugify(text: str) -> str:
     return s[:48] or f"file_{int(time.time())}"
 
 
+def _inspect_model_metadata(path: Path) -> tuple[str, str, bool]:
+    """
+    Returns (label, style, is_sdxl).
+    Extracts embedded safetensors metadata or derives a human-readable label from filename.
+    """
+    name_lower = path.stem.lower()
+    raw_title = ""
+    arch = ""
+
+    if path.suffix.lower() == ".safetensors":
+        try:
+            with open(path, "rb") as f:
+                header_len = struct.unpack("<Q", f.read(8))[0]
+                if header_len < 10 * 1024 * 1024:
+                    header = json.loads(f.read(header_len).decode("utf-8", errors="ignore"))
+                    meta = header.get("__metadata__", {})
+                    raw_title = str(meta.get("modelspec.title") or meta.get("title") or meta.get("name") or "")
+                    arch = str(meta.get("modelspec.architecture") or "")
+        except Exception:
+            pass
+
+    combined = f"{raw_title} {arch} {name_lower}".lower()
+    is_sdxl = "xl" in combined or "sdxl" in combined or (path.stat().st_size > 4.5 * 1024 * 1024 * 1024)
+
+    # 1. Pony Diffusion / V6 full TE
+    if "v6-full-te" in combined or "pony" in combined:
+        return "Pony Diffusion V6 XL", "pony", True
+    # 2. CyberRealistic
+    if "cyberrealistic" in combined:
+        return "CyberRealistic V8 (Photo)", "photorealistic", is_sdxl
+    # 3. AbsoluteReality
+    if "absolutereality" in combined or "absolute_reality" in combined:
+        return "AbsoluteReality (Photo)", "photorealistic", is_sdxl
+    # 4. Realistic Vision / General Realism
+    if any(k in combined for k in ("realistic", "photo", "dslr", "realvis")):
+        clean = (raw_title or path.stem).replace("_", " ").replace("-", " ").title()
+        return f"{clean} (Photo)", "photorealistic", is_sdxl
+    # 5. MeinaMix / Anime
+    if "meina" in combined:
+        return "MeinaMix V11 (Anime)", "anime", is_sdxl
+    if any(k in combined for k in ("anime", "manga", "waifu", "animagine")):
+        clean = (raw_title or path.stem).replace("_", " ").replace("-", " ").title()
+        return f"{clean} (Anime)", "anime", is_sdxl
+    # 6. DreamShaper
+    if "dreamshaper" in combined:
+        return "DreamShaper 8 (Artistic)", "artistic", is_sdxl
+    # 7. Generic fallback from filename
+    clean_name = (raw_title if len(raw_title) > 3 else path.stem).replace("_", " ").replace("-", " ").strip().title()
+    badge = " (SDXL)" if is_sdxl else ""
+    return f"{clean_name}{badge}", "generalist" if is_sdxl else "artistic", is_sdxl
+
+
 def list_available_sd_models() -> Dict[str, Dict[str, Any]]:
     """
-    Scan models/image/ and classify installed diffusion checkpoints into styles:
-    - photorealistic: e.g. Realistic Vision V5.1, CyberRealistic
-    - anime: e.g. MeinaMix V11, AnyLoRA
-    - artistic: e.g. DreamShaper 8, RevAnimated
+    Scan models/image/ and classify installed diffusion checkpoints into styles.
     """
     catalog: Dict[str, Dict[str, Any]] = {}
     if not SD_MODEL_DIR.exists():
@@ -93,22 +144,13 @@ def list_available_sd_models() -> Dict[str, Dict[str, Any]]:
         for p in sorted(SD_MODEL_DIR.glob(ext)):
             if p.name.endswith(".part"):
                 continue
-            name_lower = p.stem.lower()
-            if any(k in name_lower for k in ("cyberrealistic", "realistic", "photo", "dslr", "real")):
-                style = "photorealistic"
-                label = "CyberRealistic V8 (Photorealism)"
-            elif any(k in name_lower for k in ("anime", "meina", "waifu", "manga", "animagine")):
-                style = "anime"
-                label = "MeinaMix V11 (Anime / Manga)"
-            else:
-                style = "artistic"
-                label = "DreamShaper 8 (Concept Art / Stylized)"
-
+            label, style, is_sdxl = _inspect_model_metadata(p)
             catalog[p.name] = {
                 "filename": p.name,
                 "path": p,
                 "style": style,
                 "label": label,
+                "is_sdxl": is_sdxl,
                 "size_gb": round(p.stat().st_size / (1024**3), 2),
             }
     return catalog
@@ -121,75 +163,88 @@ def resolve_sd_model_and_prompts(
     """
     Multi-Model Diffusion Router:
     Selects the optimal installed neural checkpoint and tailored prompt enhancements
-    based on the user request and artistic style.
+    based on the user request, chosen checkpoint filename, or artistic style.
     Returns: (model_path, resolved_style, enhanced_prompt, negative_prompt, engine_label)
     """
     models = list_available_sd_models()
     if not models:
         return None, "artistic", prompt, "", "No local diffusion model found"
 
-    # 1. Determine target aesthetic or explicitly named model
     req = (requested_style or "auto").strip().lower()
-    p_lower = prompt.lower()
-    combined_query = f"{req} {p_lower}"
+    selected: Optional[Dict[str, Any]] = None
 
-    # Check for direct model name mentions first
-    if any(k in combined_query for k in ("meinamix", "meina mix", "meina")):
-        target_style = "anime"
-    elif any(k in combined_query for k in ("cyberrealistic", "cyber realistic", "cyber_realistic", "realistic vision", "realisticvision", "realistic_vision")):
-        target_style = "photorealistic"
-    elif any(k in combined_query for k in ("dreamshaper", "dream shaper", "dream_shaper")):
-        target_style = "artistic"
-    elif req in ("photorealistic", "photo", "realistic"):
-        target_style = "photorealistic"
-    elif req in ("anime", "manga", "cartoon"):
-        target_style = "anime"
-    elif req in ("artistic", "stylized", "fantasy", "digital_art"):
-        target_style = "artistic"
-    else:
-        # Automatic intent classification from prompt
-        anime_keywords = (
-            "anime", "manga", "cel-shaded", "waifu", "chibi", "studio ghibli",
-            "shinkai", "otaku", "comic", "japanese animation", "anime girl", "anime boy"
-        )
-        photo_keywords = (
-            "photo", "photograph", "realistic", "photorealistic", "real life",
-            "dslr", "candid", "portrait", "35mm", "hyperrealistic", "shot on",
-            "raw photo", "macro photo", "national geographic"
-        )
-        if any(k in p_lower for k in anime_keywords):
+    # 1. Direct model selection: match exact filename, key, or stem
+    for k, m in models.items():
+        if req == k.lower() or req == m["filename"].lower() or req == Path(m["filename"]).stem.lower():
+            selected = m
+            break
+
+    # 2. Check for explicit model names mentioned in prompt or request
+    if not selected:
+        p_lower = prompt.lower()
+        combined_query = f"{req} {p_lower}"
+        if any(k in combined_query for k in ("pony", "v6", "autism")):
+            target_style = "pony"
+        elif any(k in combined_query for k in ("meinamix", "meina mix", "meina")):
             target_style = "anime"
-        elif any(k in p_lower for k in photo_keywords):
+        elif any(k in combined_query for k in ("cyberrealistic", "cyber realistic", "realistic vision", "realisticvision", "absolute")):
             target_style = "photorealistic"
-        else:
+        elif any(k in combined_query for k in ("dreamshaper", "dream shaper")):
             target_style = "artistic"
+        elif req in ("photorealistic", "photo", "realistic"):
+            target_style = "photorealistic"
+        elif req in ("anime", "manga", "cartoon"):
+            target_style = "anime"
+        elif req in ("artistic", "stylized", "fantasy", "digital_art"):
+            target_style = "artistic"
+        elif req in ("pony", "generalist"):
+            target_style = "pony"
+        else:
+            # Automatic intent classification from prompt
+            anime_keywords = (
+                "anime", "manga", "cel-shaded", "waifu", "chibi", "studio ghibli",
+                "shinkai", "otaku", "comic", "japanese animation", "anime girl", "anime boy"
+            )
+            photo_keywords = (
+                "photo", "photograph", "realistic", "photorealistic", "real life",
+                "dslr", "candid", "portrait", "35mm", "hyperrealistic", "shot on",
+                "raw photo", "macro photo", "national geographic"
+            )
+            if any(k in p_lower for k in anime_keywords):
+                target_style = "anime"
+            elif any(k in p_lower for k in photo_keywords):
+                target_style = "photorealistic"
+            else:
+                target_style = "artistic"
 
-    # 2. Pick the best matching model, or fallback to any installed model
-    matching = [m for m in models.values() if m["style"] == target_style]
-    selected = matching[0] if matching else list(models.values())[0]
+        # Pick matching model or fallback
+        matching = [m for m in models.values() if m["style"] == target_style]
+        selected = matching[0] if matching else list(models.values())[0]
+
     model_path = selected["path"]
     resolved_style = selected["style"]
+    engine_label = f"{selected['label']} • {selected['filename']}"
 
     # 3. Apply model-specialized prompt engineering
-    if resolved_style == "photorealistic":
+    if resolved_style == "pony" or "pony" in engine_label.lower():
+        enhanced_prompt = f"score_9, score_8_up, score_7_up, {prompt}"
+        negative_prompt = "score_4, score_5, score_6, low quality, bad anatomy, deformed, blurry, watermark"
+    elif resolved_style == "photorealistic":
         enhanced_prompt = f"{prompt}, raw photo, 35mm photograph, DSLR, detailed skin texture, natural ambient lighting, sharp focus, 8k uhd"
         negative_prompt = (
             "drawing, painting, illustration, cartoon, anime, 3d render, CGI, digital art, "
             "concept art, sketch, airbrushed, cartoonish, blurry, low quality, deformed, "
             "watermark, text, signature, ugly, bad anatomy"
         )
-        engine_label = f"CyberRealistic V8 (Photorealism • {selected['filename']})"
     elif resolved_style == "anime":
         enhanced_prompt = f"{prompt}, masterpiece, best quality, ultra-detailed anime aesthetic, expressive eyes, vibrant colors, cinematic anime lighting"
         negative_prompt = (
             "photorealistic, realistic, 3d render, cgi, low quality, worst quality, blurry, "
             "bad anatomy, deformed hands, missing fingers, extra limbs, watermark, text, signature, ugly"
         )
-        engine_label = f"MeinaMix V11 (Anime/Manga • {selected['filename']})"
     else:
         enhanced_prompt = f"{prompt}, masterpiece, concept art, high quality, intricate details, sharp focus, dramatic lighting, rich color palette"
         negative_prompt = "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
-        engine_label = f"DreamShaper 8 (Concept Art • {selected['filename']})"
 
     return model_path, resolved_style, enhanced_prompt, negative_prompt, engine_label
 
@@ -637,6 +692,12 @@ async def tool_generate_visual_media(
         filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
         seed = random.randint(1, 999999999)
 
+        models_cat = list_available_sd_models()
+        model_info = models_cat.get(model_path.name, {})
+        is_sdxl = model_info.get("is_sdxl", False) or (model_path.stat().st_size > 4.5 * 1024**3)
+        target_res = "1024" if is_sdxl else "512"
+        steps = "20" if is_sdxl else "16"
+
         cmd = [
             str(SD_CLI_PATH),
             "-m",
@@ -646,11 +707,11 @@ async def tool_generate_visual_media(
             "-n",
             negative_prompt,
             "-W",
-            "512",
+            target_res,
             "-H",
-            "512",
+            target_res,
             "--steps",
-            "16",
+            steps,
             "--cfg-scale",
             "7.0",
             "--sampling-method",

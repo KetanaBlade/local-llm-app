@@ -292,6 +292,12 @@ async def api_delete_model(req: DeleteModelRequest):
 @app.post("/api/models/image/download")
 async def api_download_image_model(req: DownloadImageModelRequest):
     raw_filename = Path(req.filename).name.strip()
+    if not raw_filename or raw_filename.lower() in ("model.safetensors", "custom_model.safetensors"):
+        clean_url_stem = req.url.split("?")[0].rstrip("/").split("/")[-1]
+        if clean_url_stem and ("." in clean_url_stem or len(clean_url_stem) > 4):
+            raw_filename = clean_url_stem
+    if not raw_filename:
+        raw_filename = "downloaded_model.safetensors"
     if not raw_filename.endswith((".safetensors", ".gguf", ".ckpt")):
         raw_filename += ".safetensors"
 

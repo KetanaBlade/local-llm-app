@@ -1084,15 +1084,17 @@ export default function App() {
                     {imageGenMode && (
                       <div className="relative shrink-0">
                         <select
-                          aria-label="Choose Image Engine Style"
+                          aria-label="Choose Image Engine or Checkpoint"
                           value={imageGenStyle}
                           onChange={(e) => setImageGenStyle(e.target.value)}
-                          className="h-8 pl-2 pr-6 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-[11px] sm:text-xs font-medium text-purple-200 appearance-none cursor-pointer transition"
+                          className="h-8 pl-2 pr-6 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-[11px] sm:text-xs font-medium text-purple-200 appearance-none cursor-pointer transition max-w-[210px] truncate"
                         >
                           <option value="auto">🎯 Auto (Smart Style)</option>
-                          <option value="photorealistic">📸 CyberRealistic (Photo)</option>
-                          <option value="anime">🌸 MeinaMix (Anime)</option>
-                          <option value="artistic">🎨 DreamShaper (Art)</option>
+                          {imageModels.map((im) => (
+                            <option key={im.filename} value={im.filename}>
+                              {im.label}
+                            </option>
+                          ))}
                         </select>
                         <ChevronDown className="w-3 h-3 text-purple-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
@@ -1813,12 +1815,12 @@ export default function App() {
                     <div className="space-y-2">
                       {[
                         {
-                          name: 'AbsoluteReality V1.8.1',
-                          desc: 'Photorealism, Studio Portraits & Character Art',
-                          badge: 'Photorealism',
-                          size_gb: '2.1',
-                          filename: 'absolutereality_v181.safetensors',
-                          url: 'https://huggingface.co/digiplay/AbsoluteReality_v1.8.1/resolve/main/absolutereality_v181.safetensors',
+                          name: 'Pony Diffusion V6 XL',
+                          desc: 'Versatile SDXL checkpoint for complex poses, rich styles & fine art',
+                          badge: 'SDXL Versatile',
+                          size_gb: '6.5',
+                          filename: 'pony_diffusion_v6_xl.safetensors',
+                          url: 'https://huggingface.co/AstraliteHeart/pony-diffusion-v6-xl/resolve/main/v6_full_te.safetensors',
                         },
                         {
                           name: 'CyberRealistic V4.2',
@@ -1844,9 +1846,23 @@ export default function App() {
                           filename: 'DreamShaper_8_pruned.safetensors',
                           url: 'https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors',
                         },
+                        {
+                          name: 'AbsoluteReality V1.8.1',
+                          desc: 'Photorealism, Studio Portraits & Character Art',
+                          badge: 'Photorealism',
+                          size_gb: '2.1',
+                          filename: 'absolutereality_v181.safetensors',
+                          url: 'https://huggingface.co/digiplay/AbsoluteReality_v1.8.1/resolve/main/absolutereality_v181.safetensors',
+                        },
                       ].map((chk) => {
                         const isInstalled = imageModels.some(
-                          (im) => im.filename.toLowerCase() === chk.filename.toLowerCase()
+                          (im) =>
+                            im.filename.toLowerCase() === chk.filename.toLowerCase() ||
+                            im.label.toLowerCase().includes(chk.name.toLowerCase()) ||
+                            (chk.name.includes('CyberRealistic') && im.filename.toLowerCase().includes('cyberrealistic')) ||
+                            (chk.name.includes('DreamShaper') && im.filename.toLowerCase().includes('dreamshaper')) ||
+                            (chk.name.includes('MeinaMix') && im.filename.toLowerCase().includes('meina')) ||
+                            (chk.name.includes('Pony') && (im.filename.toLowerCase().includes('pony') || im.label.toLowerCase().includes('pony')))
                         )
                         return (
                           <div
