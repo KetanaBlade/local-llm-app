@@ -128,9 +128,19 @@ def resolve_sd_model_and_prompts(
     if not models:
         return None, "artistic", prompt, "", "No local diffusion model found"
 
-    # 1. Determine target aesthetic
+    # 1. Determine target aesthetic or explicitly named model
     req = (requested_style or "auto").strip().lower()
-    if req in ("photorealistic", "photo", "realistic"):
+    p_lower = prompt.lower()
+    combined_query = f"{req} {p_lower}"
+
+    # Check for direct model name mentions first
+    if any(k in combined_query for k in ("meinamix", "meina mix", "meina")):
+        target_style = "anime"
+    elif any(k in combined_query for k in ("realistic vision", "realisticvision", "realistic_vision")):
+        target_style = "photorealistic"
+    elif any(k in combined_query for k in ("dreamshaper", "dream shaper", "dream_shaper")):
+        target_style = "artistic"
+    elif req in ("photorealistic", "photo", "realistic"):
         target_style = "photorealistic"
     elif req in ("anime", "manga", "cartoon"):
         target_style = "anime"
@@ -138,7 +148,6 @@ def resolve_sd_model_and_prompts(
         target_style = "artistic"
     else:
         # Automatic intent classification from prompt
-        p_lower = prompt.lower()
         anime_keywords = (
             "anime", "manga", "cel-shaded", "waifu", "chibi", "studio ghibli",
             "shinkai", "otaku", "comic", "japanese animation", "anime girl", "anime boy"

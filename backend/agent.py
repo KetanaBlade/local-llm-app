@@ -247,10 +247,11 @@ You can answer general questions conversationally AND you have local tools to cr
 Guidelines:
 - For normal questions or conversation, simply reply naturally and clearly without calling any tools.
 - When calling `generate_visual_media` for an image: select the matching `style` parameter:
-  * `photorealistic` for real-life camera photos, portraits, landscapes, or DSLR shots.
-  * `anime` for Japanese anime, manga, cel-shaded art, or cute avatars.
-  * `artistic` for fantasy illustrations, concept art, 3D character design, or digital paintings.
+  * `photorealistic` for real-life camera photos, portraits, landscapes, or if the user asks for 'Realistic Vision'.
+  * `anime` for Japanese anime, manga, cel-shaded art, or if the user asks for 'MeinaMix'.
+  * `artistic` for fantasy illustrations, concept art, 3D character design, or if the user asks for 'DreamShaper'.
   * `auto` to let the local router infer the style from the prompt.
+- If the user explicitly mentions a model by name (e.g., 'use DreamShaper to make...', 'use Realistic Vision...', 'render with MeinaMix...'), honor their choice directly by setting the corresponding style.
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""

@@ -138,6 +138,21 @@ def test_sd_multi_model_router():
     assert "realistic" in o_model.name.lower()
     print("[PASS] Explicit style override works cleanly")
 
+    # 5. Test Asking for model by name in prompt
+    named_dream, _, _, _, _ = resolve_sd_model_and_prompts(
+        "Use DreamShaper to create a realistic photo of a knight",
+        requested_style="auto",
+    )
+    assert "dreamshaper" in named_dream.name.lower()
+    print("[PASS] Named model 'DreamShaper' honored despite conflicting photo keyword")
+
+    named_meina, _, _, _, _ = resolve_sd_model_and_prompts(
+        "Use MeinaMix to generate a portrait of an astronaut",
+        requested_style="auto",
+    )
+    assert "meina" in named_meina.name.lower()
+    print("[PASS] Named model 'MeinaMix' honored directly")
+
 
 if __name__ == "__main__":
     test_confine_to_workspace()
