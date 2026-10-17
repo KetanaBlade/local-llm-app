@@ -22,12 +22,17 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
+import platform
+import subprocess
+import time
+import openpyxl
 import qrcode
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import List
 
 from .agent import (
     OLLAMA_BASE,
@@ -48,13 +53,14 @@ from .database import (
     init_db,
     list_artifacts,
     list_conversations,
+    register_artifact,
     update_conversation_context,
     update_conversation_model,
     update_conversation_title,
     update_settings,
 )
 from .hardware import build_hardware_profile
-from .tools import ARTIFACTS_DIR, list_available_sd_models, SD_MODEL_DIR
+from .tools import ARTIFACTS_DIR, WORKSPACE_DIR, list_available_sd_models, SD_MODEL_DIR
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -123,6 +129,7 @@ class ChatRequest(BaseModel):
     mode: str = "chat"
     context: Optional[str] = None
     image_style: Optional[str] = "auto"
+    attached_files: Optional[List[Dict[str, Any]]] = None
 
 
 class ContextUpdateRequest(BaseModel):
@@ -506,6 +513,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             gaming_mode=settings.get("gaming_mode", False),
             image_style=req.image_style or "auto",
             brave_api_key=settings.get("brave_search_api_key", ""),
+            attached_files=req.attached_files,
         ):
             if await request.is_disconnected():
                 await flush_ollama_vram()
@@ -573,6 +581,128 @@ async def api_serve_artifact_file(filename: str, download: bool = False):
         filename=safe_name,
         content_disposition_type=disposition,
     )
+
+
+@app.post("/api/workspace/upload")
+async def api_upload_workspace(
+    files: List[UploadFile] = File(...),
+    conversation_id: Optional[str] = Form(None),
+):
+    """
+    Accepts one or more uploaded files or clipboard images, saves them to the workspace artifacts
+    directory, registers them in the database, and returns metadata for chat attachment and preview.
+    """
+    uploaded = []
+    uploads_dir = WORKSPACE_DIR / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    for f in files:
+        raw_name = Path(f.filename or "uploaded_file").name
+        ext = Path(raw_name).suffix.lower()
+        stem = Path(raw_name).stem.replace(" ", "_")
+        safe_name = f"{stem}_{int(time.time() * 1000)}{ext}" if (ARTIFACTS_DIR / raw_name).exists() else raw_name
+
+        dest_path = ARTIFACTS_DIR / safe_name
+        content_bytes = await f.read()
+        dest_path.write_bytes(content_bytes)
+
+        # Also store copy in workspace/uploads/ for direct file discovery
+        (uploads_dir / safe_name).write_bytes(content_bytes)
+
+        # Determine category & mime_type
+        category = "document"
+        mime = f.content_type or "application/octet-stream"
+        if ext in (".xlsx", ".xls", ".csv"):
+            category = "spreadsheet"
+        elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"):
+            category = "image"
+        elif ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".sql", ".sh"):
+            category = "code"
+        elif ext in (".zip", ".tar", ".gz", ".7z"):
+            category = "archive"
+
+        preview_data = {}
+        if ext in (".xlsx", ".xlsm"):
+            try:
+                wb = openpyxl.load_workbook(dest_path, read_only=True)
+                preview_data["sheets"] = wb.sheetnames
+                wb.close()
+            except Exception:
+                pass
+
+        art = await register_artifact(
+            title=raw_name,
+            filename=safe_name,
+            category=category,
+            mime_type=mime,
+            size_bytes=len(content_bytes),
+            preview_data=preview_data,
+            conversation_id=conversation_id,
+        )
+        uploaded.append({
+            **art,
+            "path": f"workspace/artifacts/{safe_name}",
+            "url": f"/api/artifacts/file/{safe_name}",
+        })
+
+    return {"status": "success", "files": uploaded}
+
+
+@app.get("/api/workspace/files")
+async def api_list_workspace_files():
+    """
+    Returns all files across the user's workspace for the workspace explorer and multi-file projects.
+    """
+    file_entries = []
+    if WORKSPACE_DIR.exists():
+        for root, dirs, files in os.walk(WORKSPACE_DIR):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+            for file in files:
+                if file.startswith(".") or ".bak" in file:
+                    continue
+                full_p = Path(root) / file
+                rel_p = full_p.relative_to(WORKSPACE_DIR)
+                stat = full_p.stat()
+                ext = full_p.suffix.lower()
+                cat = "document"
+                if ext in (".xlsx", ".xls", ".csv"):
+                    cat = "spreadsheet"
+                elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                    cat = "image"
+                elif ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json"):
+                    cat = "code"
+                file_entries.append({
+                    "name": file,
+                    "relative_path": str(rel_p).replace("\\", "/"),
+                    "category": cat,
+                    "size_bytes": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                })
+
+    return {
+        "workspace_root": str(WORKSPACE_DIR.resolve()),
+        "files": sorted(file_entries, key=lambda x: x["modified_at"], reverse=True),
+    }
+
+
+@app.post("/api/workspace/open-folder")
+async def api_open_workspace_folder():
+    """
+    Opens the local workspace directory directly in the host OS File Explorer.
+    """
+    try:
+        ws_path = str(WORKSPACE_DIR.resolve())
+        if platform.system() == "Windows":
+            os.startfile(ws_path)
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", ws_path])
+        else:
+            subprocess.Popen(["xdg-open", ws_path])
+        return {"status": "success", "path": ws_path}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 
 
 if (FRONTEND_DIST / "assets").exists():

@@ -12,6 +12,7 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime
 import json
 import os
@@ -26,6 +27,7 @@ import httpx
 
 from .hardware import detect_nvidia_gpu
 from .tools import (
+    ARTIFACTS_DIR,
     get_tool_schemas,
     resolve_sd_model_and_prompts,
     tool_build_interactive_app,
@@ -38,6 +40,7 @@ from .tools import (
     tool_read_file,
     tool_run_python_sandbox,
     tool_search_web,
+    WORKSPACE_DIR,
 )
 
 OLLAMA_BASE = "http://127.0.0.1:11434"
@@ -517,6 +520,7 @@ async def run_agent_stream(
     gaming_mode: bool = False,
     image_style: str = "auto",
     brave_api_key: str = "",
+    attached_files: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # Direct Image Generation Mode: 100% bypass of LLM parsing & zero corporate moralizing
     if mode == "image" or model.startswith("sd:"):
@@ -606,6 +610,39 @@ async def run_agent_stream(
             f"{chat_context.strip()}\n"
             "===================================================================="
         )
+
+    if attached_files:
+        attachment_lines = []
+        for af in attached_files:
+            fname = af.get("filename") or af.get("title", "")
+            fpath = af.get("path") or f"workspace/artifacts/{fname}"
+            fcat = af.get("category", "file")
+            attachment_lines.append(f"- `{fname}` (Category: {fcat}, Location: `{fpath}`)")
+        sys_prompt += (
+            "\n\n=== ATTACHED WORKSPACE FILES FOR THIS REQUEST ===\n"
+            + "\n".join(attachment_lines)
+            + "\nYou can inspect and process these files directly using your tools (such as `read_file`, or `execute_python` with openpyxl/pandas).\n"
+            + "=================================================="
+        )
+
+    if mode == "agent":
+        try:
+            ws_files = []
+            for item in sorted(WORKSPACE_DIR.glob("**/*"))[:30]:
+                if item.is_file() and not item.name.startswith(".") and ".bak" not in item.name:
+                    rel_p = str(item.relative_to(WORKSPACE_DIR)).replace("\\", "/")
+                    size_kb = round(item.stat().st_size / 1024, 1)
+                    ws_files.append(f"- `{rel_p}` ({size_kb} KB)")
+            if ws_files:
+                sys_prompt += (
+                    f"\n\n=== LOCAL WORKSPACE DIRECTORY ({WORKSPACE_DIR.resolve()}) ===\n"
+                    + "\n".join(ws_files)
+                    + "\nYou have direct filesystem tools (`read_file`, `edit_file_content`, `list_directory`, `execute_python`) to inspect, edit, or create files in this workspace.\n"
+                    + "================================================================"
+                )
+        except Exception:
+            pass
+
     ollama_messages = [{"role": "system", "content": sys_prompt}]
 
     # 2. Context Auto-Compaction (Cursor-style self-summarizing context window guard)
@@ -616,7 +653,23 @@ async def run_agent_stream(
     for m in compacted_history:
         if m["role"] in ("system", "user", "assistant"):
             ollama_messages.append({"role": m["role"], "content": m["content"]})
-    ollama_messages.append({"role": "user", "content": user_prompt})
+    user_msg_payload: Dict[str, Any] = {"role": "user", "content": user_prompt}
+    if attached_files:
+        img_b64s = []
+        for af in attached_files:
+            if af.get("category") == "image":
+                fname = af.get("filename")
+                if fname:
+                    img_path = ARTIFACTS_DIR / fname
+                    if img_path.exists():
+                        try:
+                            b64_val = base64.b64encode(img_path.read_bytes()).decode("utf-8")
+                            img_b64s.append(b64_val)
+                        except Exception:
+                            pass
+        if img_b64s:
+            user_msg_payload["images"] = img_b64s
+    ollama_messages.append(user_msg_payload)
 
     tool_traces: List[Dict[str, Any]] = []
     collected_artifacts: List[Dict[str, Any]] = []

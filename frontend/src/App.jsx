@@ -35,6 +35,9 @@ import {
   Terminal,
   Zap,
   MessageSquare,
+  Paperclip,
+  Upload,
+  Folder,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -73,6 +76,13 @@ export default function App() {
     typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
   )
   const [filePanelOpen, setFilePanelOpen] = useState(false)
+  const [attachedFiles, setAttachedFiles] = useState([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [workspaceFiles, setWorkspaceFiles] = useState([])
+  const [workspaceRoot, setWorkspaceRoot] = useState('')
+  const [workspaceTab, setWorkspaceTab] = useState('artifacts')
+  const fileInputRef = useRef(null)
+  const workspaceUploadRef = useRef(null)
   const [hwModalOpen, setHwModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
   const [mobileModalOpen, setMobileModalOpen] = useState(false)
@@ -222,10 +232,92 @@ export default function App() {
     }
   }
 
+  const fetchWorkspaceFiles = async () => {
+    try {
+      const r = await fetch('/api/workspace/files')
+      if (r.ok) {
+        const data = await r.json()
+        setWorkspaceFiles(data.files || [])
+        setWorkspaceRoot(data.workspace_root || '')
+      }
+    } catch (e) {
+      console.error(e)
+    }
+  }
+
+  const handleUploadFiles = async (fileList) => {
+    if (!fileList || fileList.length === 0) return
+    setIsUploading(true)
+    try {
+      const formData = new FormData()
+      for (let i = 0; i < fileList.length; i++) {
+        formData.append('files', fileList[i])
+      }
+      if (activeConvId) {
+        formData.append('conversation_id', activeConvId)
+      }
+      const r = await fetch('/api/workspace/upload', {
+        method: 'POST',
+        body: formData,
+      })
+      if (r.ok) {
+        const data = await r.json()
+        if (data.files && data.files.length > 0) {
+          setAttachedFiles((prev) => [...prev, ...data.files])
+          await fetchArtifacts()
+          await fetchWorkspaceFiles()
+        }
+      }
+    } catch (err) {
+      console.error('File upload failed:', err)
+    } finally {
+      setIsUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+      if (workspaceUploadRef.current) workspaceUploadRef.current.value = ''
+    }
+  }
+
+  const handleClipboardPaste = (e) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+    const filesToUpload = []
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i]
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile()
+        if (blob) {
+          const ext = item.type.split('/')[1] || 'png'
+          const file = new File([blob], `screenshot_${Date.now()}.${ext}`, { type: item.type })
+          filesToUpload.push(file)
+        }
+      } else if (item.kind === 'file') {
+        const file = item.getAsFile()
+        if (file) filesToUpload.push(file)
+      }
+    }
+    if (filesToUpload.length > 0) {
+      e.preventDefault()
+      handleUploadFiles(filesToUpload)
+    }
+  }
+
+  const handleOpenWorkspaceFolder = async () => {
+    try {
+      await fetch('/api/workspace/open-folder', { method: 'POST' })
+    } catch (err) {
+      console.error('Failed to open workspace folder:', err)
+    }
+  }
+
+  const removeAttachedFile = (idx) => {
+    setAttachedFiles((prev) => prev.filter((_, i) => i !== idx))
+  }
+
   useEffect(() => {
     fetchSystemStatus()
     fetchConversations()
     fetchArtifacts()
+    fetchWorkspaceFiles()
     const interval = setInterval(fetchSystemStatus, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -302,6 +394,7 @@ export default function App() {
       }))
     )
     await fetchArtifacts()
+    await fetchWorkspaceFiles()
   }
 
   const handleUpdateSetting = async (updates) => {
@@ -439,8 +532,11 @@ export default function App() {
 
   const handleSendPrompt = async (overrideText) => {
     const text = (overrideText ?? promptInput).trim()
-    if (!text || isStreaming) return
+    if ((!text && attachedFiles.length === 0) || isStreaming) return
     if (!overrideText) setPromptInput('')
+
+    const filesToSend = [...attachedFiles]
+    setAttachedFiles([])
 
     lastSendTimeRef.current = Date.now()
 
@@ -454,11 +550,13 @@ export default function App() {
     setIsStreaming(true)
     setStreamStatus(`Running on ${selectedModel}...`)
 
+    const promptText = text || 'Analyze attached file(s)'
     const tempAssistantId = 'stream_' + Date.now()
     const optimisticUser = {
       id: 'u_' + Date.now(),
       role: 'user',
-      content: text,
+      content: promptText,
+      attached_files: filesToSend,
       created_at: Date.now() / 1000,
     }
     const optimisticAssistant = {
@@ -487,11 +585,12 @@ export default function App() {
         signal: abortController.signal,
         body: JSON.stringify({
           conversation_id: activeConvId,
-          prompt: text,
+          prompt: promptText,
           model: selectedModel,
           mode: imageGenMode ? 'image' : (orchestratorMode ? 'agent' : 'chat'),
           image_style: imageGenStyle,
           context: chatContext,
+          attached_files: filesToSend,
         }),
       })
 
@@ -627,6 +726,8 @@ export default function App() {
       abortControllerRef.current = null
       setIsStreaming(false)
       setStreamStatus('')
+      await fetchArtifacts()
+      await fetchWorkspaceFiles()
     }
   }
 
@@ -688,14 +789,13 @@ export default function App() {
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => setHwModalOpen(true)}
-            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-1.5 text-xs transition cursor-pointer"
-            title="View PC / Laptop Hardware Settings"
+            onClick={() => setModelModalOpen(true)}
+            aria-label="Explore and download AI models"
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition cursor-pointer"
+            title="Explore, download, or switch AI models"
           >
-            <Cpu className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="font-mono text-[11px] text-slate-200 tabular-nums hidden md:inline">
-              {hw ? hw.short_badge : 'Hardware'}
-            </span>
+            <Sparkles className="w-3.5 h-3.5 text-[#D97757]" />
+            <span className="font-medium">+ Models</span>
           </button>
 
           <button
@@ -1097,10 +1197,50 @@ export default function App() {
                   </div>
                 )}
 
+                {attachedFiles.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 px-1.5 py-1 bg-black/25 rounded-lg border border-white/[0.06]">
+                    {attachedFiles.map((af, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#161B26] border border-white/[0.1] text-xs text-slate-200"
+                      >
+                        {af.category === 'image' ? (
+                          <img src={af.url} alt="" className="w-5 h-5 rounded object-cover border border-white/10" />
+                        ) : af.category === 'spreadsheet' ? (
+                          <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : af.category === 'code' ? (
+                          <Code2 className="w-3.5 h-3.5 text-sky-400" />
+                        ) : (
+                          <FileText className="w-3.5 h-3.5 text-amber-400" />
+                        )}
+                        <span className="truncate max-w-[130px] font-medium">{af.title || af.filename}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {((af.size_bytes || 0) / 1024).toFixed(0)}KB
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachedFile(idx)}
+                          className="text-slate-400 hover:text-white p-0.5 rounded hover:bg-white/10 ml-0.5 cursor-pointer"
+                          title="Remove attachment"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    {isUploading && (
+                      <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-slate-400">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
+                        <span>Uploading...</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <textarea
                   rows={2}
                   value={promptInput}
                   onChange={(e) => setPromptInput(e.target.value)}
+                  onPaste={handleClipboardPaste}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
@@ -1212,13 +1352,30 @@ export default function App() {
 
                     <button
                       type="button"
-                      onClick={() => setModelModalOpen(true)}
-                      className="h-9 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1 shrink-0 transition cursor-pointer"
-                      title="Download or switch models"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploading}
+                      aria-label="Attach file or image"
+                      className="h-9 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      title="Attach spreadsheet, code, document, or image (or paste image with Ctrl+V)"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-[#D97757]" />
-                      <span className="hidden sm:inline">+ Models</span>
+                      {isUploading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-[#D97757]" />
+                      ) : (
+                        <Paperclip className="w-3.5 h-3.5 text-[#D97757]" />
+                      )}
+                      <span className="hidden sm:inline">Attach</span>
                     </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          handleUploadFiles(e.target.files)
+                        }
+                      }}
+                      className="hidden"
+                    />
 
                     <button
                       type="button"
@@ -1291,19 +1448,129 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <FolderOpen className="w-4 h-4 text-[#D97757]" />
                 <span className="text-xs font-semibold text-white">
-                  File Preview & Downloads
+                  Workspace & Files
                 </span>
               </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleOpenWorkspaceFolder}
+                  className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                  title="Open Workspace folder on PC in File Explorer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-[#D97757]" />
+                  <span className="hidden sm:inline">Open Folder</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => workspaceUploadRef.current?.click()}
+                  className="h-8 px-2 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
+                  title="Upload files to workspace"
+                >
+                  <Upload className="w-3.5 h-3.5 text-[#D97757]" />
+                </button>
+                <input
+                  ref={workspaceUploadRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) {
+                      handleUploadFiles(e.target.files)
+                    }
+                  }}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => setFilePanelOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                  title="Close Workspace Panel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Segmented Workspace View Switcher */}
+            <div className="px-3 py-2 border-b border-white/[0.06] bg-[#0B0D12] flex items-center gap-1">
               <button
-                onClick={() => setFilePanelOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06]"
-                title="Close File Preview"
+                type="button"
+                onClick={() => setWorkspaceTab('artifacts')}
+                className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  workspaceTab === 'artifacts'
+                    ? 'bg-[#181C26] text-white border border-white/[0.1]'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
               >
-                <X className="w-4 h-4" />
+                <span>Previews & Artifacts</span>
+                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
+                  {artifacts.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceTab('workspace')
+                  fetchWorkspaceFiles()
+                }}
+                className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  workspaceTab === 'workspace'
+                    ? 'bg-[#181C26] text-white border border-white/[0.1]'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>Workspace Files</span>
+                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
+                  {workspaceFiles.length}
+                </span>
               </button>
             </div>
 
-            <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+            {workspaceTab === 'workspace' ? (
+              <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E] p-3 overflow-y-auto">
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-2 pb-1.5 border-b border-white/[0.05]">
+                  <span className="truncate">Root: {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}</span>
+                  <button
+                    type="button"
+                    onClick={fetchWorkspaceFiles}
+                    className="text-xs text-[#D97757] hover:underline cursor-pointer"
+                  >
+                    Refresh
+                  </button>
+                </div>
+                {workspaceFiles.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
+                    <Folder className="w-8 h-8 mb-2 text-slate-600" />
+                    <p className="text-xs leading-relaxed">
+                      No files in workspace yet. Attach files in chat or click "Upload" above to add context files.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {workspaceFiles.map((wf, idx) => (
+                      <div
+                        key={idx}
+                        className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] flex items-center justify-between gap-2 transition"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <ArtifactTypeBadge category={wf.category} />
+                          <div className="min-w-0">
+                            <div className="font-medium text-slate-200 truncate">{wf.name}</div>
+                            <div className="text-[10px] font-mono text-slate-500 truncate">{wf.relative_path}</div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-[10px] font-mono text-slate-400 tabular-nums">
+                            {(wf.size_bytes / 1024).toFixed(1)} KB
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
               {selectedArtifact ? (
                 <div className="flex-1 flex flex-col min-h-0">
                   <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
@@ -1419,6 +1686,14 @@ export default function App() {
                         )}
                       </div>
                     )}
+
+                    {selectedArtifact.category === 'code' && (
+                      <div className="space-y-3 h-full flex flex-col">
+                        <div className="p-3 rounded-lg bg-[#080A0F] border border-white/[0.08] text-xs font-mono text-emerald-300/90 whitespace-pre overflow-x-auto max-h-[500px]">
+                          {selectedArtifact.preview_data?.code_snippet || `// File: ${selectedArtifact.filename}\n// Full content inspectable and editable by Orchestrator.`}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -1473,6 +1748,7 @@ export default function App() {
                 </div>
               )}
             </div>
+          )}
           </aside>
         )}
       </div>
@@ -2377,6 +2653,32 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
             <span className="italic">{msg.thinking ? 'Thinking through response...' : 'Generating response...'}</span>
           </div>
         )
+      )}
+
+      {/* Attached Files on User Message */}
+      {isUser && msg.attached_files && msg.attached_files.length > 0 && (
+        <div className="mt-2.5 pt-2 border-t border-white/[0.08] flex flex-wrap gap-2">
+          {msg.attached_files.map((af, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0C0E14] border border-white/[0.08] text-xs"
+            >
+              {af.category === 'image' ? (
+                <img src={af.url} alt="" className="w-5 h-5 rounded object-cover border border-white/10" />
+              ) : af.category === 'spreadsheet' ? (
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              ) : af.category === 'code' ? (
+                <Code2 className="w-3.5 h-3.5 text-sky-400" />
+              ) : (
+                <FileText className="w-3.5 h-3.5 text-amber-400" />
+              )}
+              <span className="text-slate-200 font-medium truncate max-w-[150px]">{af.title || af.filename}</span>
+              <span className="text-[10px] text-slate-500 font-mono">
+                {((af.size_bytes || 0) / 1024).toFixed(0)}KB
+              </span>
+            </div>
+          ))}
+        </div>
       )}
 
       {/* Inline File Cards with Direct Preview AND Direct Delete Button */}
