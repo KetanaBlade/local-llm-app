@@ -442,14 +442,87 @@ async def register_artifact(
 
 
 async def list_artifacts() -> List[Dict[str, Any]]:
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("PRAGMA busy_timeout = 5000")
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 100")
+        cursor = await db.execute("SELECT * FROM artifacts ORDER BY created_at DESC LIMIT 200")
         rows = await cursor.fetchall()
         items = []
+        dead_ids = []
+        known_filenames = set()
+
         for r in rows:
             d = dict(r)
+            fname = d["filename"]
+            known_filenames.add(fname)
+            fpath = ARTIFACTS_DIR / Path(fname).name
+
+            # If user deleted the file from disk (e.g. in Windows Explorer), prune from DB!
+            if not fpath.exists():
+                dead_ids.append(d["id"])
+                continue
+
             d["url"] = f"/api/artifacts/file/{d['filename']}"
             d["preview_data"] = json.loads(d.get("preview_data") or "{}")
             items.append(d)
+
+        if dead_ids:
+            for did in dead_ids:
+                await db.execute("DELETE FROM artifacts WHERE id = ?", (did,))
+            await db.commit()
+
+        # Auto-discover any unindexed files on disk (e.g. test images or copied files)
+        newly_indexed = []
+        for disk_file in ARTIFACTS_DIR.iterdir():
+            if not disk_file.is_file() or disk_file.name.startswith(".") or disk_file.name in known_filenames:
+                continue
+
+            raw_name = disk_file.name
+            ext = disk_file.suffix.lower()
+            cat = "document"
+            mime = "application/octet-stream"
+            if ext in (".xlsx", ".xls", ".csv"):
+                cat = "spreadsheet"
+                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if ext.startswith(".xls") else "text/csv"
+            elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                cat = "image"
+                mime = f"image/{ext.lstrip('.')}"
+            elif ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".sql", ".sh"):
+                cat = "code"
+                mime = "text/plain"
+            elif ext in (".mp4", ".webm"):
+                cat = "video"
+                mime = f"video/{ext.lstrip('.')}"
+
+            stat = disk_file.stat()
+            aid = str(uuid.uuid4())
+            now = stat.st_mtime
+            prev_json = "{}"
+
+            await db.execute(
+                """
+                INSERT INTO artifacts
+                (id, conversation_id, title, filename, category, mime_type, size_bytes, preview_data, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (aid, None, raw_name, raw_name, cat, mime, stat.st_size, prev_json, now),
+            )
+            newly_indexed.append({
+                "id": aid,
+                "conversation_id": None,
+                "title": raw_name,
+                "filename": raw_name,
+                "url": f"/api/artifacts/file/{raw_name}",
+                "category": cat,
+                "mime_type": mime,
+                "size_bytes": stat.st_size,
+                "preview_data": {},
+                "created_at": now,
+            })
+
+        if newly_indexed:
+            await db.commit()
+            items = sorted(items + newly_indexed, key=lambda x: x["created_at"], reverse=True)
+
         return items

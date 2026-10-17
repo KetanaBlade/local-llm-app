@@ -38,6 +38,8 @@ import {
   Paperclip,
   Upload,
   Folder,
+  Copy,
+  Check,
 } from 'lucide-react'
 
 marked.setOptions({
@@ -81,6 +83,9 @@ export default function App() {
   const [workspaceFiles, setWorkspaceFiles] = useState([])
   const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [workspaceTab, setWorkspaceTab] = useState('artifacts')
+  const [viewingFile, setViewingFile] = useState(null)
+  const [isDraggingOver, setIsDraggingOver] = useState(false)
+  const [copiedCode, setCopiedCode] = useState(false)
   const fileInputRef = useRef(null)
   const workspaceUploadRef = useRef(null)
   const [hwModalOpen, setHwModalOpen] = useState(false)
@@ -306,6 +311,53 @@ export default function App() {
       await fetch('/api/workspace/open-folder', { method: 'POST' })
     } catch (err) {
       console.error('Failed to open workspace folder:', err)
+    }
+  }
+
+  const handleViewWorkspaceFile = async (relPath) => {
+    try {
+      const r = await fetch(`/api/workspace/file-content?path=${encodeURIComponent(relPath)}`)
+      if (r.ok) {
+        const data = await r.json()
+        setViewingFile(data)
+        setWorkspaceTab('preview')
+        setFilePanelOpen(true)
+      }
+    } catch (e) {
+      console.error('Failed to read file content:', e)
+    }
+  }
+
+  const handleAttachWorkspaceFile = (wf) => {
+    if (attachedFiles.some((af) => af.path === wf.relative_path || af.filename === wf.name)) {
+      return
+    }
+    const newAttached = {
+      title: wf.name,
+      filename: wf.name,
+      path: `workspace/${wf.relative_path}`,
+      url: `/api/artifacts/file/${wf.name}`,
+      category: wf.category,
+      size_bytes: wf.size_bytes,
+    }
+    setAttachedFiles((prev) => [...prev, newAttached])
+  }
+
+  const handleDeleteWorkspaceFile = async (e, relPath) => {
+    if (e) e.stopPropagation()
+    try {
+      const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(relPath)}`, {
+        method: 'DELETE',
+      })
+      if (r.ok) {
+        if (viewingFile?.relative_path === relPath) {
+          setViewingFile(null)
+        }
+        await fetchWorkspaceFiles()
+        await fetchArtifacts()
+      }
+    } catch (e) {
+      console.error('Failed to delete workspace file:', e)
     }
   }
 
@@ -992,7 +1044,41 @@ export default function App() {
         )}
 
         {/* CENTER STAGE: BACKGROUND CONTEXT + CHAT STREAM + COMPOSER */}
-        <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#0A0B0E] select-text">
+        <main
+          onDragOver={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setIsDraggingOver(true)
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            if (!e.currentTarget.contains(e.relatedTarget)) {
+              setIsDraggingOver(false)
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            setIsDraggingOver(false)
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+              handleUploadFiles(e.dataTransfer.files)
+            }
+          }}
+          className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#0A0B0E] select-text relative"
+        >
+          {isDraggingOver && (
+            <div className="absolute inset-0 z-50 bg-[#0D111A]/95 backdrop-blur-sm border-2 border-dashed border-[#D97757] rounded-xl flex flex-col items-center justify-center pointer-events-none p-6 text-center m-2 sm:m-4 shadow-2xl">
+              <div className="h-16 w-16 rounded-2xl bg-[#D97757]/15 border border-[#D97757]/40 flex items-center justify-center text-[#D97757] mb-3 animate-bounce shadow-lg shadow-[#D97757]/10">
+                <Upload className="w-8 h-8" />
+              </div>
+              <div className="text-base font-semibold text-white">Drop files to add to workspace context</div>
+              <div className="text-xs text-slate-400 mt-1 max-w-sm leading-relaxed">
+                Spreadsheets (.xlsx, .csv), code files (.py, .js, .json), documents (.pdf, .docx), or images will be attached to your prompt and saved to your workspace.
+              </div>
+            </div>
+          )}
+
           <div
             ref={chatScrollContainerRef}
             className="flex-1 overflow-y-auto px-3 sm:px-6 lg:px-10 py-4 sm:py-6"
@@ -1300,6 +1386,9 @@ export default function App() {
                         onClick={() => {
                           setImageGenMode(false)
                           setOrchestratorMode(true)
+                          if (typeof window !== 'undefined' && window.innerWidth >= 1280) {
+                            setFilePanelOpen(true)
+                          }
                         }}
                         className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
                           orchestratorMode && !imageGenMode
@@ -1550,19 +1639,47 @@ export default function App() {
                     {workspaceFiles.map((wf, idx) => (
                       <div
                         key={idx}
-                        className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] flex items-center justify-between gap-2 transition"
+                        className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] hover:border-white/[0.1] flex items-center justify-between gap-2 transition group"
                       >
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div
+                          onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                          className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
+                          title="Click to view file content"
+                        >
                           <ArtifactTypeBadge category={wf.category} />
                           <div className="min-w-0">
-                            <div className="font-medium text-slate-200 truncate">{wf.name}</div>
+                            <div className="font-medium text-slate-200 truncate group-hover:text-white transition">{wf.name}</div>
                             <div className="text-[10px] font-mono text-slate-500 truncate">{wf.relative_path}</div>
                           </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className="text-[10px] font-mono text-slate-400 tabular-nums">
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[10px] font-mono text-slate-400 tabular-nums mr-1">
                             {(wf.size_bytes / 1024).toFixed(1)} KB
                           </span>
+                          <button
+                            type="button"
+                            onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                            className="p-1.5 rounded bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white transition cursor-pointer"
+                            title="Preview file content"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleAttachWorkspaceFile(wf)}
+                            className="p-1.5 rounded bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] transition cursor-pointer"
+                            title="Attach file to chat prompt"
+                          >
+                            <Paperclip className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteWorkspaceFile(e, wf.relative_path)}
+                            className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 transition cursor-pointer"
+                            title="Delete file permanently from disk"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -1571,7 +1688,82 @@ export default function App() {
               </div>
             ) : (
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              {selectedArtifact ? (
+              {viewingFile ? (
+                <div className="flex-1 flex flex-col min-h-0">
+                  <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-white truncate">
+                          {viewingFile.name}
+                        </span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300">
+                          WORKSPACE FILE
+                        </span>
+                      </div>
+                      <div className="text-[11px] font-mono text-slate-400 truncate tabular-nums">
+                        {viewingFile.relative_path} ({(viewingFile.size_bytes / 1024).toFixed(1)} KB)
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleAttachWorkspaceFile({
+                            name: viewingFile.name,
+                            relative_path: viewingFile.relative_path,
+                            category: viewingFile.type,
+                            size_bytes: viewingFile.size_bytes,
+                          })
+                        }}
+                        className="h-8 px-2.5 rounded-md border border-[#D97757]/40 bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] text-xs font-medium flex items-center gap-1 transition cursor-pointer"
+                        title="Attach this file to your chat prompt"
+                      >
+                        <Paperclip className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Attach</span>
+                      </button>
+                      {viewingFile.content && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(viewingFile.content)
+                            setCopiedCode(true)
+                            setTimeout(() => setCopiedCode(false), 2000)
+                          }}
+                          className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
+                          title="Copy file contents to clipboard"
+                        >
+                          {copiedCode ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5 text-slate-400" />
+                          )}
+                          <span className="hidden sm:inline">{copiedCode ? 'Copied' : 'Copy'}</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setViewingFile(null)}
+                        className="h-8 px-2 rounded-md border border-white/[0.08] hover:bg-white/[0.06] text-xs text-slate-400 hover:text-white transition cursor-pointer"
+                        title="Close file preview"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-auto p-4 bg-[#0A0B0E]">
+                    {viewingFile.type === 'image' ? (
+                      <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#10131A] flex items-center justify-center p-2">
+                        <img src={viewingFile.url} alt={viewingFile.name} className="max-w-full rounded" />
+                      </div>
+                    ) : (
+                      <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#080A0F] p-3 text-xs font-mono text-slate-200 overflow-x-auto whitespace-pre leading-relaxed select-text">
+                        {viewingFile.content}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : selectedArtifact ? (
                 <div className="flex-1 flex flex-col min-h-0">
                   <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
                     <div className="min-w-0">

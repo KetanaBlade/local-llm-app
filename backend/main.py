@@ -23,10 +23,12 @@ from typing import Any, Dict, Optional
 
 import httpx
 import platform
+import shutil
 import subprocess
 import time
 import openpyxl
 import qrcode
+import aiosqlite
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -44,6 +46,7 @@ from .agent import (
     run_agent_stream,
 )
 from .database import (
+    DB_PATH,
     add_message,
     create_conversation,
     delete_artifact,
@@ -60,7 +63,7 @@ from .database import (
     update_settings,
 )
 from .hardware import build_hardware_profile
-from .tools import ARTIFACTS_DIR, WORKSPACE_DIR, list_available_sd_models, SD_MODEL_DIR
+from .tools import ARTIFACTS_DIR, WORKSPACE_DIR, confine_to_workspace, list_available_sd_models, SD_MODEL_DIR
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -702,6 +705,94 @@ async def api_open_workspace_folder():
         return {"status": "success", "path": ws_path}
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@app.get("/api/workspace/file-content")
+async def api_get_workspace_file_content(path: str):
+    """
+    Reads and returns the text, code, or media preview data of any workspace file.
+    """
+    try:
+        safe_rel = path.replace("\\", "/").strip().lstrip("/")
+        target = confine_to_workspace(safe_rel)
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        ext = target.suffix.lower()
+        stat = target.stat()
+
+        if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".svg"):
+            return {
+                "type": "image",
+                "name": target.name,
+                "relative_path": safe_rel,
+                "url": f"/api/artifacts/file/{target.name}",
+                "size_bytes": stat.st_size,
+            }
+        elif ext in (".xlsx", ".xls", ".csv"):
+            return {
+                "type": "spreadsheet",
+                "name": target.name,
+                "relative_path": safe_rel,
+                "url": f"/api/artifacts/file/{target.name}",
+                "size_bytes": stat.st_size,
+            }
+        elif ext in (".pdf", ".docx"):
+            return {
+                "type": "document",
+                "name": target.name,
+                "relative_path": safe_rel,
+                "url": f"/api/artifacts/file/{target.name}",
+                "size_bytes": stat.st_size,
+            }
+
+        # Text / code file reading
+        max_bytes = 2 * 1024 * 1024
+        raw_text = target.read_text(encoding="utf-8", errors="ignore")
+        if len(raw_text) > max_bytes:
+            content = raw_text[:50000] + "\n\n... [Content truncated: file exceeds 2MB] ..."
+        else:
+            content = raw_text
+
+        return {
+            "type": "code",
+            "name": target.name,
+            "relative_path": safe_rel,
+            "extension": ext.lstrip("."),
+            "size_bytes": stat.st_size,
+            "content": content,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/workspace/file")
+async def api_delete_workspace_file(path: str):
+    """
+    Physically deletes any file in the workspace directory and purges any corresponding
+    artifact entries from SQLite.
+    """
+    try:
+        safe_rel = path.replace("\\", "/").strip().lstrip("/")
+        target = confine_to_workspace(safe_rel)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        safe_name = target.name
+        if target.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+        else:
+            target.unlink(missing_ok=True)
+            (ARTIFACTS_DIR / safe_name).unlink(missing_ok=True)
+            (WORKSPACE_DIR / "uploads" / safe_name).unlink(missing_ok=True)
+
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("DELETE FROM artifacts WHERE filename = ?", (safe_name,))
+            await db.commit()
+
+        return {"status": "success", "path": safe_rel}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 
