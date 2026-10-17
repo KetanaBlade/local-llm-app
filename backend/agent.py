@@ -97,6 +97,8 @@ async def list_installed_models() -> List[Dict[str, Any]]:
                     "quantization": details.get("quantization_level", ""),
                     "modified_at": m.get("modified_at", ""),
                 })
+            # Sort conversational models first (ahead of coding-specialized models)
+            models.sort(key=lambda x: (1 if "coder" in (x.get("id") or "").lower() else 0, x.get("id") or ""))
             return models
     except Exception:
         return []
@@ -203,7 +205,23 @@ async def execute_tool_call(
 
 def detect_proactive_artifact_intent(user_prompt: str) -> Optional[Dict[str, Any]]:
     p_low = user_prompt.lower()
-    if any(k in p_low for k in ("generate an image", "create a picture", "draw a picture", "generate a picture", "create an image")):
+    if any(
+        k in p_low
+        for k in (
+            "generate an image",
+            "create an image",
+            "make an image",
+            "create a picture",
+            "generate a picture",
+            "make a picture",
+            "draw a ",
+            "draw an ",
+            "photo of ",
+            "picture of ",
+            "image of ",
+            "illustration of ",
+        )
+    ):
         return {"name": "generate_visual_media", "intent": "image"}
     if any(k in p_low for k in ("generate a video", "create a video", "animate", "motion clip")):
         return {"name": "generate_visual_media", "intent": "video"}

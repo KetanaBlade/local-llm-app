@@ -20,6 +20,8 @@ workspace/artifacts/*
 !workspace/artifacts/.gitkeep
 workspace/projects/*
 !workspace/projects/.gitkeep
+bin/
+models/
 
 # OS & Editor
 .DS_Store

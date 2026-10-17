@@ -4,18 +4,20 @@ Antigravity Agent Tool Suite & Sandbox Executor.
 Provides structured local tools for:
 1. create_excel_spreadsheet — Builds formatted .xlsx workbooks with formulas, styling, and live UI table previews
 2. create_document — Generates .pdf and .docx documents with structured sections and tables
-3. generate_visual_media — Generates high-DPI images, charts, or motion sequences
+3. generate_visual_media — Generates REAL neural AI images via built-in GPU Stable Diffusion (`sd-cli.exe` + `DreamShaper 8`), high-DPI Matplotlib charts, or motion sequences
 4. build_interactive_app — Creates self-contained interactive HTML/CSS/JS web apps with live preview
 5. run_python_sandbox — Executes custom Python scripts and auto-captures any generated files as Artifacts
-6. search_web — Searches DuckDuckGo when the user turns ON "Allow Web Search" (blocked in Offline Mode)
+6. search_web — Searches DuckDuckGo when the user turns ON "Web Search Allowed" (blocked in Offline Mode)
 """
 
 from __future__ import annotations
 
+import asyncio
 import html
 import math
 import mimetypes
 import platform
+import random
 import re
 import subprocess
 import sys
@@ -35,6 +37,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 WORKSPACE_DIR = ROOT_DIR / "workspace"
 ARTIFACTS_DIR = WORKSPACE_DIR / "artifacts"
 PROJECTS_DIR = WORKSPACE_DIR / "projects"
+SD_CLI_PATH = ROOT_DIR / "bin" / "sd" / ("sd-cli.exe" if platform.system() == "Windows" else "sd-cli")
+SD_MODEL_DIR = ROOT_DIR / "models" / "image"
 
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -43,6 +47,16 @@ PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 def _slugify(text: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", text.strip().lower()).strip("_")
     return s[:48] or f"file_{int(time.time())}"
+
+
+def _find_local_sd_model() -> Optional[Path]:
+    if not SD_MODEL_DIR.exists():
+        return None
+    for ext in ("*.safetensors", "*.gguf", "*.ckpt"):
+        matches = sorted(SD_MODEL_DIR.glob(ext))
+        if matches:
+            return matches[0]
+    return None
 
 
 def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
@@ -73,10 +87,6 @@ def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
 
 
 async def tool_search_web(query: str, offline_mode: bool = True) -> Dict[str, Any]:
-    """
-    Perform a privacy-preserving web search via DuckDuckGo HTML when Offline Mode is turned OFF.
-    Strictly blocked if Offline Mode is ON.
-    """
     if offline_mode:
         return {
             "status": "blocked",
@@ -94,7 +104,11 @@ async def tool_search_web(query: str, offline_mode: bool = True) -> Dict[str, An
             body = resp.text
 
         titles = re.findall(r'class="result__a"[^>]*>(.*?)</a>', body, flags=re.DOTALL)
-        snippets = re.findall(r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>', body, flags=re.DOTALL)
+        snippets = re.findall(
+            r'class="result__snippet"[^>]*>(.*?)</a>|class="result__snippet"[^>]*>(.*?)</div>',
+            body,
+            flags=re.DOTALL,
+        )
 
         clean_results = []
         for idx, raw_title in enumerate(titles[:5]):
@@ -124,9 +138,6 @@ async def tool_create_excel_spreadsheet(
     sheets: List[Dict[str, Any]],
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Build a multi-sheet formatted Excel (.xlsx) workbook with headers, data rows, formulas, and styling.
-    """
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.xlsx"
     filepath = ARTIFACTS_DIR / filename
 
@@ -246,9 +257,6 @@ async def tool_create_document(
     sections: List[Dict[str, Any]],
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Create a formatted PDF (.pdf) or Word (.docx) document with headings, paragraphs, and bullet lists.
-    """
     fmt = doc_format.lower().strip().lstrip(".")
     if fmt not in ("pdf", "docx", "md"):
         fmt = "pdf"
@@ -367,9 +375,6 @@ async def tool_build_interactive_app(
     html_code: str,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Save a self-contained HTML/CSS/JS interactive web app or dashboard and expose a live sandbox preview.
-    """
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.html"
     filepath = ARTIFACTS_DIR / filename
     filepath.write_text(html_code, encoding="utf-8")
@@ -412,12 +417,20 @@ async def tool_generate_visual_media(
     vram_handoff: bool = True,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    from PIL import Image, ImageDraw, ImageFilter
+    """
+    Generate a real neural AI image (via built-in Vulkan GPU Stable Diffusion `sd-cli.exe` + `DreamShaper 8`),
+    a high-DPI Matplotlib chart, or an animated clip.
+    """
+    from PIL import Image, ImageDraw
 
     is_video = media_type.lower() in ("video", "animation", "gif", "motion")
+    is_chart = media_type.lower() == "chart" or (
+        chart_data and isinstance(chart_data, dict) and chart_data.get("labels") and chart_data.get("values")
+    )
     slug = _slugify(prompt[:36])
 
-    if chart_data and isinstance(chart_data, dict) and chart_data.get("labels") and chart_data.get("values"):
+    # 1. Data Chart via Matplotlib
+    if is_chart and chart_data and chart_data.get("labels") and chart_data.get("values"):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -467,144 +480,118 @@ async def tool_generate_visual_media(
             category="image",
             mime_type="image/png",
             size_bytes=filepath.stat().st_size,
-            preview_data={"prompt": prompt, "engine": "Matplotlib Studio HD"},
+            preview_data={"prompt": prompt, "engine": "Matplotlib HD Chart"},
             conversation_id=conversation_id,
         )
-        return {"status": "success", "summary": f"Rendered high-DPI chart '{filename}'.", "artifact": artifact}
+        return {"status": "success", "summary": f"Rendered chart '{filename}'.", "artifact": artifact}
 
-    if not is_video:
-        try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                ping = await client.get("http://127.0.0.1:7860/sdapi/v1/sd-models")
-                if ping.status_code == 200:
-                    await _evict_ollama_vram_if_needed(active_model, vram_handoff)
-                    import base64
-
-                    resp = await client.post(
-                        "http://127.0.0.1:7860/sdapi/v1/txt2img",
-                        json={"prompt": prompt, "steps": 20, "width": 1024, "height": 768},
-                        timeout=60.0,
-                    )
-                    if resp.status_code == 200:
-                        b64_img = resp.json()["images"][0]
-                        filename = f"img_{slug}_{int(time.time()) % 10000}.png"
-                        filepath = ARTIFACTS_DIR / filename
-                        filepath.write_bytes(base64.b64decode(b64_img))
-                        artifact = await register_artifact(
-                            title=prompt[:60],
-                            filename=filename,
-                            category="image",
-                            mime_type="image/png",
-                            size_bytes=filepath.stat().st_size,
-                            preview_data={"prompt": prompt, "engine": "Local Diffusion (:7860)"},
-                            conversation_id=conversation_id,
-                        )
-                        return {
-                            "status": "success",
-                            "summary": f"Generated image '{filename}' via local diffusion engine.",
-                            "artifact": artifact,
-                        }
-        except Exception:
-            pass
-
-    if is_video:
-        filename = f"motion_{slug}_{int(time.time()) % 10000}.gif"
+    # 2. Built-in Real Neural Diffusion Image Generation (`sd-cli.exe` + `DreamShaper 8` on Vulkan GPU)
+    local_sd_model = _find_local_sd_model()
+    if not is_video and SD_CLI_PATH.exists() and local_sd_model:
+        await _evict_ollama_vram_if_needed(active_model, vram_handoff)
+        filename = f"img_{slug}_{int(time.time()) % 10000}.png"
         filepath = ARTIFACTS_DIR / filename
-        frames = []
-        width, height = 640, 380
-        for f_idx in range(24):
-            t = f_idx / 24.0
-            img = Image.new("RGB", (width, height), (13, 15, 20))
-            draw = ImageDraw.Draw(img)
-            for ring in range(6):
-                phase = t * 2 * math.pi + ring * 0.55
-                cx = int(width * 0.5 + math.cos(phase) * (90 + ring * 18))
-                cy = int(height * 0.5 + math.sin(phase * 1.5) * (45 + ring * 10))
-                r = 28 + ring * 12
-                color = (
-                    min(255, 190 + ring * 10),
-                    min(255, 95 + ring * 20),
-                    min(255, 70 + ring * 25),
-                )
-                draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=2)
-            draw.rectangle([20, height - 54, width - 20, height - 18], fill=(20, 23, 30))
-            draw.text((34, height - 42), f"LOCAL MOTION  •  {prompt[:46].upper()}", fill=(235, 237, 242))
-            frames.append(img)
+        seed = random.randint(1, 999999999)
+        enhanced_prompt = f"{prompt}, masterpiece, high resolution, detailed, sharp focus, natural lighting"
+        negative_prompt = "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
 
-        frames[0].save(
-            filepath,
-            save_all=True,
-            append_images=frames[1:],
-            duration=65,
-            loop=0,
-        )
-        artifact = await register_artifact(
-            title=prompt[:60],
-            filename=filename,
-            category="video",
-            mime_type="image/gif",
-            size_bytes=filepath.stat().st_size,
-            preview_data={"prompt": prompt, "engine": "On-Device Procedural Motion (24 frames)"},
-            conversation_id=conversation_id,
-        )
-        return {
-            "status": "success",
-            "summary": f"Generated animated clip '{filename}'.",
-            "artifact": artifact,
-        }
+        cmd = [
+            str(SD_CLI_PATH),
+            "-m",
+            str(local_sd_model),
+            "-p",
+            enhanced_prompt,
+            "-n",
+            negative_prompt,
+            "-W",
+            "512",
+            "-H",
+            "512",
+            "--steps",
+            "16",
+            "--cfg-scale",
+            "7.0",
+            "--sampling-method",
+            "euler_a",
+            "-s",
+            str(seed),
+            "-o",
+            str(filepath),
+        ]
 
-    filename = f"visual_{slug}_{int(time.time()) % 10000}.png"
+        def _run_sd():
+            return subprocess.run(
+                cmd,
+                cwd=str(SD_CLI_PATH.parent),
+                capture_output=True,
+                text=True,
+                timeout=90.0,
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+            )
+
+        proc = await asyncio.to_thread(_run_sd)
+        if proc.returncode == 0 and filepath.exists():
+            artifact = await register_artifact(
+                title=prompt[:60],
+                filename=filename,
+                category="image",
+                mime_type="image/png",
+                size_bytes=filepath.stat().st_size,
+                preview_data={
+                    "prompt": prompt,
+                    "engine": f"Local Neural GPU Diffusion ({local_sd_model.stem} • Vulkan)",
+                },
+                conversation_id=conversation_id,
+            )
+            return {
+                "status": "success",
+                "summary": f"Generated AI image '{filename}' using {local_sd_model.name} on your local GPU.",
+                "artifact": artifact,
+            }
+
+    # 3. Animated Motion Clip
+    filename = f"motion_{slug}_{int(time.time()) % 10000}.gif"
     filepath = ARTIFACTS_DIR / filename
-    width, height = 1280, 760
-    img = Image.new("RGB", (width, height), (12, 14, 18))
-    draw = ImageDraw.Draw(img)
+    frames = []
+    width, height = 640, 380
+    for f_idx in range(24):
+        t = f_idx / 24.0
+        img = Image.new("RGB", (width, height), (13, 15, 20))
+        draw = ImageDraw.Draw(img)
+        for ring in range(6):
+            phase = t * 2 * math.pi + ring * 0.55
+            cx = int(width * 0.5 + math.cos(phase) * (90 + ring * 18))
+            cy = int(height * 0.5 + math.sin(phase * 1.5) * (45 + ring * 10))
+            r = 28 + ring * 12
+            color = (
+                min(255, 190 + ring * 10),
+                min(255, 95 + ring * 20),
+                min(255, 70 + ring * 25),
+            )
+            draw.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=2)
+        draw.rectangle([20, height - 54, width - 20, height - 18], fill=(20, 23, 30))
+        draw.text((34, height - 42), f"LOCAL MOTION  •  {prompt[:46].upper()}", fill=(235, 237, 242))
+        frames.append(img)
 
-    for x in range(0, width, 40):
-        draw.line([(x, 0), (x, height)], fill=(22, 25, 32), width=1)
-    for y in range(0, height, 40):
-        draw.line([(0, y), (width, y)], fill=(22, 25, 32), width=1)
-
-    seed_val = sum(ord(c) * (i + 1) for i, c in enumerate(prompt))
-    for i in range(14):
-        angle = (seed_val + i * 47) % 360
-        rad = math.radians(angle)
-        cx = int(width * 0.5 + math.cos(rad) * (120 + i * 24))
-        cy = int(height * 0.46 + math.sin(rad) * (70 + i * 16))
-        radius = 45 + (i * 19) % 160
-        col = (
-            180 + (i * 15) % 65,
-            95 + (i * 23) % 110,
-            75 + (i * 31) % 140,
-        )
-        draw.ellipse(
-            [cx - radius, cy - radius, cx + radius, cy + radius],
-            outline=col,
-            width=3,
-        )
-
-    img = img.filter(ImageFilter.SMOOTH)
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([40, height - 110, width - 40, height - 36], fill=(18, 21, 28), outline=(46, 52, 64), width=1)
-    draw.text((64, height - 92), prompt[:78].upper(), fill=(243, 244, 246))
-    draw.text(
-        (64, height - 64),
-        "ON-DEVICE SYNTHESIS (CONNECT COMFYUI :8188 OR FORGE :7860 FOR FLUX/SDXL)",
-        fill=(156, 163, 175),
+    frames[0].save(
+        filepath,
+        save_all=True,
+        append_images=frames[1:],
+        duration=65,
+        loop=0,
     )
-    img.save(filepath, "PNG")
-
     artifact = await register_artifact(
         title=prompt[:60],
         filename=filename,
-        category="image",
-        mime_type="image/png",
+        category="video",
+        mime_type="image/gif",
         size_bytes=filepath.stat().st_size,
-        preview_data={"prompt": prompt, "engine": "Local Canvas Renderer"},
+        preview_data={"prompt": prompt, "engine": "On-Device Motion Synthesis (24 frames)"},
         conversation_id=conversation_id,
     )
     return {
         "status": "success",
-        "summary": f"Created graphic '{filename}'.",
+        "summary": f"Generated animated clip '{filename}'.",
         "artifact": artifact,
     }
 
@@ -768,11 +755,14 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "generate_visual_media",
-                "description": "Generate an image, chart, or animated motion clip locally.",
+                "description": (
+                    "Generate a photorealistic or artistic AI picture/image (media_type='image'), "
+                    "a data chart (media_type='chart'), or an animation (media_type='video')."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "prompt": {"type": "string"},
+                        "prompt": {"type": "string", "description": "Detailed visual prompt for the image or chart title"},
                         "media_type": {"type": "string", "enum": ["image", "video", "chart"]},
                         "chart_data": {"type": "object"},
                     },

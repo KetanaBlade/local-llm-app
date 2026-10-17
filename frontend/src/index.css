@@ -7,19 +7,27 @@
     color-scheme: dark;
   }
 
-  * {
-    box-sizing: border-box;
-    border-color: rgba(255, 255, 255, 0.075);
-  }
-
-  body {
+  html,
+  body,
+  #root {
+    height: 100%;
+    height: 100dvh;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
     background-color: #0A0B0E;
     color: #F3F4F6;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
     -webkit-font-smoothing: antialiased;
   }
 
-  /* Precision keyboard focus state (WCAG 2.1 AA) */
+  * {
+    box-sizing: border-box;
+    border-color: rgba(255, 255, 255, 0.075);
+  }
+
   *:focus-visible {
     outline: 2px solid #D97757;
     outline-offset: 2px;
@@ -30,7 +38,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Custom sleek scrollbars */
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -49,11 +60,11 @@
   background: rgba(255, 255, 255, 0.24);
 }
 
-/* Editorial Markdown Typography */
 .prose-studio {
   color: #E5E7EB;
   line-height: 1.68;
   font-size: 0.95rem;
+  overflow-wrap: break-word;
 }
 
 .prose-studio h1,

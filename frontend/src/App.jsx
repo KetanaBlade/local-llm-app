@@ -38,7 +38,7 @@ export default function App() {
   const [activeConvId, setActiveConvId] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatContext, setChatContext] = useState('')
-  const [contextExpanded, setContextExpanded] = useState(true)
+  const [contextExpanded, setContextExpanded] = useState(false)
   const [contextSavedBadge, setContextSavedBadge] = useState(false)
 
   const [artifacts, setArtifacts] = useState([])
@@ -46,13 +46,16 @@ export default function App() {
   const [activeSheetIdx, setActiveSheetIdx] = useState(0)
   const [appViewMode, setAppViewMode] = useState('preview')
 
-  const [selectedModel, setSelectedModel] = useState('qwen2.5-coder:7b')
+  // Default to conversational model (llama3.2:3b) rather than a coding model
+  const [selectedModel, setSelectedModel] = useState('llama3.2:3b')
   const [promptInput, setPromptInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamStatus, setStreamStatus] = useState('')
 
-  // Panels & Modals
-  const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
+  // Start left sidebar closed on mobile screens (< 1024px) so mobile layout is clean
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(
+    typeof window !== 'undefined' ? window.innerWidth >= 1024 : true
+  )
   const [filePanelOpen, setFilePanelOpen] = useState(false)
   const [hwModalOpen, setHwModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
@@ -63,7 +66,8 @@ export default function App() {
   const [pullProgress, setPullProgress] = useState(null)
   const [customModelName, setCustomModelName] = useState('')
 
-  const chatEndRef = useRef(null)
+  const chatScrollContainerRef = useRef(null)
+  const latestUserMsgRef = useRef(null)
 
   const fetchSystemStatus = async () => {
     try {
@@ -74,7 +78,11 @@ export default function App() {
         if (data.installed_models?.length > 0) {
           const installedIds = data.installed_models.map((m) => m.id)
           if (!installedIds.includes(selectedModel)) {
-            setSelectedModel(installedIds[0])
+            // Prefer conversational model first
+            const convModel =
+              installedIds.find((id) => !id.toLowerCase().includes('coder')) ||
+              installedIds[0]
+            setSelectedModel(convModel)
           }
         }
       }
@@ -115,10 +123,6 @@ export default function App() {
     return () => clearInterval(interval)
   }, [])
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamStatus])
-
   const loadConversation = async (convId) => {
     try {
       const r = await fetch(`/api/conversations/${convId}`)
@@ -128,6 +132,9 @@ export default function App() {
         setMessages(data.messages || [])
         setChatContext(data.context || '')
         setContextExpanded(Boolean(data.context))
+        if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+          setLeftSidebarOpen(false)
+        }
       }
     } catch (e) {
       console.error(e)
@@ -140,6 +147,9 @@ export default function App() {
     setChatContext('')
     setContextExpanded(true)
     setPromptInput('')
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setLeftSidebarOpen(false)
+    }
   }
 
   const handleSaveContextOnActiveChat = async (newCtx) => {
@@ -166,11 +176,18 @@ export default function App() {
   }
 
   const handleDeleteArtifact = async (e, artId) => {
-    e.stopPropagation()
+    if (e) e.stopPropagation()
     await fetch(`/api/artifacts/${artId}`, { method: 'DELETE' })
     if (selectedArtifact?.id === artId) {
       setSelectedArtifact(null)
     }
+    // Also remove the deleted artifact from any currently displayed message cards in state
+    setMessages((prev) =>
+      prev.map((m) => ({
+        ...m,
+        artifacts: (m.artifacts || []).filter((a) => a.id !== artId),
+      }))
+    )
     await fetchArtifacts()
   }
 
@@ -254,6 +271,11 @@ export default function App() {
 
     setMessages((prev) => [...prev, optimisticUser, optimisticAssistant])
 
+    // Scroll ONCE to bring the newly submitted prompt to the top of view—never yank scroll downward during streaming!
+    setTimeout(() => {
+      latestUserMsgRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }, 60)
+
     try {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
@@ -292,7 +314,11 @@ export default function App() {
           } else if (ev.type === 'status') {
             setStreamStatus(ev.message)
           } else if (ev.type === 'tool_start') {
-            setStreamStatus(`Running tool: ${ev.tool.name}...`)
+            setStreamStatus(
+              ev.tool.name === 'generate_visual_media'
+                ? 'Rendering image on local GPU (DreamShaper 8)...'
+                : `Running tool: ${ev.tool.name}...`
+            )
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === tempAssistantId
@@ -366,48 +392,48 @@ export default function App() {
   const isOfflineOnly = settings?.air_gap_mode !== false
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#0A0B0E] text-[#F3F4F6] select-none overflow-hidden">
-      {/* SIMPLIFIED TOP HEADER BAR */}
-      <header className="h-14 shrink-0 border-b border-white/[0.075] bg-[#0D0F14] px-3 lg:px-5 flex items-center justify-between gap-3 z-30">
-        <div className="flex items-center gap-3">
+    <div className="fixed inset-0 h-[100dvh] w-full flex flex-col bg-[#0A0B0E] text-[#F3F4F6] select-none overflow-hidden">
+      {/* PINNED TOP HEADER BAR (Never scrolls out of view on mobile) */}
+      <header className="h-13 sm:h-14 shrink-0 border-b border-white/[0.075] bg-[#0D0F14] px-3 lg:px-5 flex items-center justify-between gap-2 z-30">
+        <div className="flex items-center gap-2.5 min-w-0">
           <button
             onClick={() => setLeftSidebarOpen((v) => !v)}
             aria-label="Toggle Chat History Sidebar"
-            className="h-9 w-9 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] flex items-center justify-center text-slate-300 transition"
+            className="h-9 w-9 shrink-0 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] flex items-center justify-center text-slate-300 transition"
             title="Show/Hide Chat History"
           >
             <PanelLeft className="w-4 h-4" />
           </button>
 
-          <div className="flex items-center gap-2.5">
-            <div className="h-7 w-7 rounded-md bg-[#D97757]/15 border border-[#D97757]/40 flex items-center justify-center">
-              <div className="h-2.5 w-2.5 rounded-sm bg-[#D97757]" />
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="h-6 w-6 shrink-0 rounded-md bg-[#D97757]/15 border border-[#D97757]/40 flex items-center justify-center">
+              <div className="h-2 w-2 rounded-sm bg-[#D97757]" />
             </div>
-            <span className="font-semibold tracking-tight text-sm text-white">
+            <span className="font-semibold tracking-tight text-sm text-white truncate">
               Local AI Studio
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             onClick={() => setHwModalOpen(true)}
-            className="h-9 px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-2 text-xs transition"
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#13161E] hover:bg-[#191D28] flex items-center gap-1.5 text-xs transition"
             title="View PC / Laptop Hardware Settings"
           >
             <Cpu className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="font-mono text-[11px] text-slate-200 tabular-nums hidden sm:inline">
-              {hw ? hw.short_badge : 'Checking Hardware...'}
+            <span className="font-mono text-[11px] text-slate-200 tabular-nums hidden md:inline">
+              {hw ? hw.short_badge : 'Hardware'}
             </span>
           </button>
 
           <button
             onClick={() => setMobileModalOpen(true)}
-            className="h-9 px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition"
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition"
             title="Open on your Phone over Home Wi-Fi"
           >
             <Smartphone className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden md:inline font-medium">Use on Phone</span>
+            <span className="hidden md:inline font-medium">Phone Link</span>
           </button>
 
           <button
@@ -417,15 +443,15 @@ export default function App() {
               }
               setFilePanelOpen((v) => !v)
             }}
-            className={`h-9 px-3 rounded-lg border flex items-center gap-2 text-xs transition ${
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition ${
               filePanelOpen
                 ? 'border-[#D97757]/50 bg-[#D97757]/15 text-white'
                 : 'border-white/[0.08] bg-[#14171F] text-slate-300 hover:bg-[#1B1F2A]'
             }`}
-            title="View & Download Files Created by the AI"
+            title="View, Download, or Delete Created Files"
           >
             <FolderOpen className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden sm:inline font-medium">Created Files</span>
+            <span className="hidden sm:inline font-medium">Files</span>
             {artifacts.length > 0 && (
               <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-black/40 text-slate-200 tabular-nums">
                 {artifacts.length}
@@ -435,19 +461,35 @@ export default function App() {
         </div>
       </header>
 
-      {/* MAIN WORKSPACE */}
+      {/* MAIN WORKSPACE AREA */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
+        {/* Mobile Backdrop for Left Sidebar */}
+        {leftSidebarOpen && (
+          <div
+            onClick={() => setLeftSidebarOpen(false)}
+            className="fixed inset-0 bg-black/60 z-30 lg:hidden"
+          />
+        )}
+
         {/* LEFT SIDEBAR: YOUR CHATS */}
         {leftSidebarOpen && (
-          <aside className="w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-20 select-none">
+          <aside className="fixed lg:static inset-y-0 left-0 w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-40 select-none">
             <div className="p-3 space-y-4 overflow-y-auto flex-1">
-              <button
-                onClick={startNewChat}
-                className="w-full h-10 px-3 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white font-medium text-xs flex items-center gap-2 shadow-sm transition"
-              >
-                <Plus className="w-4 h-4" />
-                <span>New Chat</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={startNewChat}
+                  className="flex-1 h-10 px-3 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white font-medium text-xs flex items-center gap-2 shadow-sm transition"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>New Chat</span>
+                </button>
+                <button
+                  onClick={() => setLeftSidebarOpen(false)}
+                  className="lg:hidden h-10 w-10 rounded-lg border border-white/[0.08] bg-[#14171F] flex items-center justify-center text-slate-300"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
 
               <div>
                 <div className="px-1.5 mb-2 flex items-center justify-between">
@@ -480,8 +522,8 @@ export default function App() {
                         <button
                           onClick={(e) => handleDeleteConversation(e, c.id)}
                           aria-label="Permanently obliterate chat"
-                          title="Permanently obliterate chat & its files from database and disk"
-                          className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 p-1 transition"
+                          title="Permanently delete chat & its files from database and disk"
+                          className="text-slate-500 hover:text-rose-400 p-1 transition shrink-0"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -510,33 +552,36 @@ export default function App() {
         )}
 
         {/* CENTER STAGE: BACKGROUND CONTEXT + CHAT STREAM + COMPOSER */}
-        <main className="flex-1 flex flex-col min-w-0 bg-[#0A0B0E] select-text">
-          <div className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-10 py-6">
-            <div className="max-w-3xl mx-auto space-y-6">
+        <main className="flex-1 flex flex-col min-w-0 min-h-0 bg-[#0A0B0E] select-text">
+          <div
+            ref={chatScrollContainerRef}
+            className="flex-1 overflow-y-auto px-3 sm:px-6 lg:px-10 py-4 sm:py-6"
+          >
+            <div className="max-w-3xl mx-auto space-y-5">
               {/* BACKGROUND CONTEXT BOX AT THE START OF EVERY CHAT */}
               <div className="rounded-xl bg-[#10131B] border border-white/[0.08] overflow-hidden">
                 <div
                   onClick={() => setContextExpanded((v) => !v)}
-                  className="px-4 py-2.5 flex items-center justify-between cursor-pointer hover:bg-white/[0.02] transition"
+                  className="px-3.5 py-2.5 flex items-center justify-between cursor-pointer hover:bg-white/[0.02] transition"
                 >
-                  <div className="flex items-center gap-2">
-                    <BookOpen className="w-4 h-4 text-[#D97757]" />
-                    <span className="text-xs font-semibold text-slate-200">
-                      Background Context & Instructions for This Chat
+                  <div className="flex items-center gap-2 min-w-0">
+                    <BookOpen className="w-4 h-4 text-[#D97757] shrink-0" />
+                    <span className="text-xs font-semibold text-slate-200 truncate">
+                      Background Context & Instructions
                     </span>
                     {chatContext.trim() && (
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                        Active ({chatContext.trim().length} chars)
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shrink-0">
+                        Active
                       </span>
                     )}
                     {contextSavedBadge && (
-                      <span className="text-[10px] font-mono text-[#10B981]">
+                      <span className="text-[10px] font-mono text-[#10B981] shrink-0">
                         ✓ Saved
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-1.5 text-xs text-slate-400">
-                    <span>{contextExpanded ? 'Hide' : 'Edit'}</span>
+                  <div className="flex items-center gap-1 text-xs text-slate-400 shrink-0">
+                    <span>{contextExpanded ? 'Hide' : 'Add / Edit'}</span>
                     {contextExpanded ? (
                       <ChevronDown className="w-3.5 h-3.5" />
                     ) : (
@@ -546,17 +591,15 @@ export default function App() {
                 </div>
 
                 {contextExpanded && (
-                  <div className="px-4 pb-3.5 pt-1 border-t border-white/[0.06] space-y-2">
+                  <div className="px-3.5 pb-3.5 pt-1.5 border-t border-white/[0.06] space-y-2">
                     <p className="text-xs text-slate-400">
-                      Add any background details, project notes, role instructions, or rules you
-                      want the AI to remember across every message in this chat (even if you
-                      switch models mid-chat).
+                      Input background context, project details, or rules for this conversation:
                     </p>
                     <textarea
                       rows={3}
                       value={chatContext}
                       onChange={(e) => handleSaveContextOnActiveChat(e.target.value)}
-                      placeholder="Example: I am building a small business budget for 2026 in USD. Keep explanations concise, format numbers clearly, and include conservative and optimistic scenarios..."
+                      placeholder="Example: I am planning a kitchen remodel with a $25,000 budget. Keep answers practical and itemized..."
                       className="w-full rounded-lg bg-[#0B0D12] border border-white/[0.09] focus:border-[#D97757]/60 focus:outline-none p-2.5 text-xs text-slate-100 placeholder-slate-500 resize-y"
                     />
                   </div>
@@ -564,24 +607,30 @@ export default function App() {
               </div>
 
               {messages.length === 0 ? (
-                <div className="py-4 space-y-6">
+                <div className="py-2 sm:py-4 space-y-5">
                   <div className="space-y-2">
-                    <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-                      Ask a question or ask me to create a file.
+                    <h1 className="text-xl sm:text-3xl font-semibold tracking-tight text-white">
+                      Ask a question or ask me to create a file or image.
                     </h1>
-                    <p className="text-sm text-slate-400 leading-relaxed">
-                      Chat normally like Gemini, switch between local AI models anytime in the
-                      box below, or ask me to create real{' '}
+                    <p className="text-xs sm:text-sm text-slate-400 leading-relaxed">
+                      Chat naturally with <strong className="text-slate-200">{selectedModel}</strong>,
+                      generate real <strong className="text-slate-200">AI pictures (DreamShaper 8 GPU)</strong>,{' '}
                       <strong className="text-slate-200">Excel spreadsheets (.xlsx)</strong>,{' '}
-                      <strong className="text-slate-200">PDF / Word documents</strong>,{' '}
-                      <strong className="text-slate-200">charts & pictures</strong>, or{' '}
+                      <strong className="text-slate-200">PDF / Word documents</strong>, or{' '}
                       <strong className="text-slate-200">interactive mini-apps</strong>.
                     </p>
                   </div>
 
                   {/* 4 Clear Starter Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3">
                     {[
+                      {
+                        title: 'Generate a Real AI Image',
+                        subtitle: 'Renders on your GPU with DreamShaper 8',
+                        icon: ImageIcon,
+                        prompt:
+                          'Generate an image of a cozy mountain cabin at sunset with warm glowing windows and snow-dusted pine trees.',
+                      },
                       {
                         title: 'Make a Custom Excel Spreadsheet',
                         subtitle: 'Creates a real .xlsx file with =SUM() formulas',
@@ -598,17 +647,10 @@ export default function App() {
                       },
                       {
                         title: 'Build an Interactive Mini-App',
-                        subtitle: 'Writes a working calculator or tool you can use right here',
+                        subtitle: 'Writes a working calculator you can use right here',
                         icon: Code2,
                         prompt:
                           'Build an interactive Loan & Monthly Payment Calculator web app with sliders for loan amount, interest rate, and term.',
-                      },
-                      {
-                        title: 'Create a Chart or Visual Graphic',
-                        subtitle: 'Generates a high-resolution chart or animation',
-                        icon: ImageIcon,
-                        prompt:
-                          'Generate a bar chart comparing monthly expenses: Housing $1800, Food $650, Utilities $240, Savings $900.',
                       },
                     ].map((card, i) => {
                       const Icon = card.icon
@@ -616,7 +658,7 @@ export default function App() {
                         <button
                           key={i}
                           onClick={() => handleSendPrompt(card.prompt)}
-                          className="text-left p-4 rounded-xl bg-[#10131A] hover:bg-[#151922] border border-white/[0.075] hover:border-[#D97757]/40 transition group flex flex-col justify-between gap-3"
+                          className="text-left p-3.5 sm:p-4 rounded-xl bg-[#10131A] hover:bg-[#151922] border border-white/[0.075] hover:border-[#D97757]/40 transition group flex flex-col justify-between gap-2.5"
                         >
                           <div className="flex items-center justify-between">
                             <div className="h-8 w-8 rounded-lg bg-white/[0.04] border border-white/[0.08] flex items-center justify-center text-[#D97757]">
@@ -638,18 +680,27 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
-                  {messages.map((msg) => (
-                    <MessageRow
-                      key={msg.id}
-                      msg={msg}
-                      onSelectArtifact={(art) => {
-                        setSelectedArtifact(art)
-                        setActiveSheetIdx(0)
-                        setFilePanelOpen(true)
-                      }}
-                    />
-                  ))}
+                <div className="space-y-5 pb-4">
+                  {messages.map((msg, idx) => {
+                    const isLatestUser =
+                      msg.role === 'user' && idx >= messages.length - 2
+                    return (
+                      <div
+                        key={msg.id}
+                        ref={isLatestUser ? latestUserMsgRef : null}
+                      >
+                        <MessageRow
+                          msg={msg}
+                          onSelectArtifact={(art) => {
+                            setSelectedArtifact(art)
+                            setActiveSheetIdx(0)
+                            setFilePanelOpen(true)
+                          }}
+                          onDeleteArtifact={handleDeleteArtifact}
+                        />
+                      </div>
+                    )
+                  })}
 
                   {streamStatus && (
                     <div className="flex items-center gap-2.5 text-xs font-mono text-slate-400 py-2">
@@ -657,21 +708,20 @@ export default function App() {
                       <span>{streamStatus}</span>
                     </div>
                   )}
-                  <div ref={chatEndRef} />
                 </div>
               )}
             </div>
           </div>
 
-          {/* UNIFIED CHAT COMPOSER */}
-          <div className="p-3 sm:p-4 border-t border-white/[0.075] bg-[#0B0D12]">
+          {/* BOTTOM COMPOSER BAR (Safe-area padded & compact so it never clips on mobile) */}
+          <div className="shrink-0 px-2.5 sm:px-4 pt-2 pb-3 safe-bottom border-t border-white/[0.075] bg-[#0B0D12] z-20">
             <div className="max-w-3xl mx-auto">
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
                   handleSendPrompt()
                 }}
-                className="rounded-xl bg-[#12151E] border border-white/[0.1] focus-within:border-[#D97757]/60 transition p-2.5 space-y-2"
+                className="rounded-xl bg-[#12151E] border border-white/[0.1] focus-within:border-[#D97757]/60 transition p-2 sm:p-2.5 space-y-2"
               >
                 <textarea
                   rows={2}
@@ -683,37 +733,37 @@ export default function App() {
                       handleSendPrompt()
                     }
                   }}
-                  placeholder="Ask any question, or ask me to make an Excel sheet, PDF, Word doc, chart, picture, or app..."
-                  className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-500 resize-none focus:outline-none px-1.5 py-1"
+                  placeholder="Ask a question, or ask to generate an image, Excel sheet, PDF, or app..."
+                  className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-500 resize-none focus:outline-none px-1.5 py-0.5"
                 />
 
-                <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/[0.06]">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="relative">
+                <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-white/[0.06]">
+                  <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto">
+                    {/* Single Model Picker */}
+                    <div className="relative shrink-0">
                       <select
                         aria-label="Choose AI Model"
                         value={selectedModel}
                         onChange={(e) => setSelectedModel(e.target.value)}
-                        className="h-8 pl-2.5 pr-7 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
-                        title="Switch AI model anytime (even mid-conversation!)"
+                        className="h-8 pl-2 pr-6 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-[11px] sm:text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
                       >
                         {installedModels.map((m) => (
                           <option key={m.id} value={m.id}>
-                            Model: {m.name} ({m.size_gb} GB)
+                            {m.name} ({m.size_gb}GB)
                           </option>
                         ))}
                       </select>
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
 
                     <button
                       type="button"
                       onClick={() => setModelModalOpen(true)}
-                      className="h-8 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1.5 transition"
-                      title="Download or compare other local AI models"
+                      className="h-8 px-2 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-[11px] sm:text-xs text-slate-300 flex items-center gap-1 shrink-0 transition"
+                      title="Download or switch models"
                     >
-                      <Sparkles className="w-3.5 h-3.5 text-[#D97757]" />
-                      <span>+ More Models</span>
+                      <Sparkles className="w-3 h-3 text-[#D97757]" />
+                      <span className="hidden sm:inline">+ Models</span>
                     </button>
 
                     <button
@@ -721,26 +771,21 @@ export default function App() {
                       onClick={() =>
                         handleUpdateSetting({ air_gap_mode: !isOfflineOnly })
                       }
-                      className={`h-8 px-2.5 rounded-lg border text-xs flex items-center gap-1.5 transition ${
+                      className={`h-8 px-2 rounded-lg border text-[11px] sm:text-xs flex items-center gap-1 shrink-0 transition ${
                         isOfflineOnly
                           ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                           : 'border-sky-500/30 bg-sky-500/10 text-sky-300'
                       }`}
-                      title={
-                        isOfflineOnly
-                          ? '100% Offline: The AI cannot touch the internet. Click to allow DuckDuckGo web search.'
-                          : 'Web Search On: The AI runs on your PC but can search DuckDuckGo when needed. Click to lock Offline.'
-                      }
                     >
                       {isOfflineOnly ? (
                         <>
-                          <Lock className="w-3.5 h-3.5" />
-                          <span>Offline Only (Private)</span>
+                          <Lock className="w-3 h-3" />
+                          <span>Offline</span>
                         </>
                       ) : (
                         <>
-                          <Globe className="w-3.5 h-3.5" />
-                          <span>Web Search Allowed</span>
+                          <Globe className="w-3 h-3" />
+                          <span>Web On</span>
                         </>
                       )}
                     </button>
@@ -749,7 +794,7 @@ export default function App() {
                   <button
                     type="submit"
                     disabled={isStreaming || !promptInput.trim()}
-                    className="h-8 px-4 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 transition"
+                    className="h-8 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition"
                   >
                     {isStreaming ? (
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -766,9 +811,9 @@ export default function App() {
           </div>
         </main>
 
-        {/* RIGHT PANEL: CREATED FILES PREVIEW & DOWNLOADS */}
+        {/* RIGHT PANEL: CREATED FILES PREVIEW, DOWNLOAD & DELETE */}
         {filePanelOpen && (
-          <aside className="w-full sm:w-[440px] xl:w-[520px] shrink-0 border-l border-white/[0.075] bg-[#0D0F14] flex flex-col z-20">
+          <aside className="fixed lg:static inset-y-0 right-0 w-full sm:w-[440px] xl:w-[520px] shrink-0 border-l border-white/[0.075] bg-[#0D0F14] flex flex-col z-40">
             <div className="px-4 py-3 border-b border-white/[0.075] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FolderOpen className="w-4 h-4 text-[#D97757]" />
@@ -778,7 +823,7 @@ export default function App() {
               </div>
               <button
                 onClick={() => setFilePanelOpen(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06]"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06]"
                 title="Close File Preview"
               >
                 <X className="w-4 h-4" />
@@ -805,17 +850,25 @@ export default function App() {
                           }
                           className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] text-xs text-slate-200 hover:bg-[#202634]"
                         >
-                          {appViewMode === 'preview' ? 'View Code' : 'Live App'}
+                          {appViewMode === 'preview' ? 'Code' : 'App'}
                         </button>
                       )}
                       <a
                         href={`${selectedArtifact.url}?download=true`}
                         download={selectedArtifact.filename}
-                        className="h-8 px-3 rounded-md bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium flex items-center gap-1.5 transition"
+                        className="h-8 px-2.5 rounded-md bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium flex items-center gap-1 transition"
                       >
                         <Download className="w-3.5 h-3.5" />
-                        <span>Download File</span>
+                        <span>Download</span>
                       </a>
+                      <button
+                        onClick={(e) => handleDeleteArtifact(e, selectedArtifact.id)}
+                        className="h-8 px-2.5 rounded-md border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium flex items-center gap-1 transition"
+                        title="Permanently delete this file from disk and database"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
                     </div>
                   </div>
 
@@ -839,7 +892,7 @@ export default function App() {
                               rel="noreferrer"
                               className="text-[#D97757] hover:underline flex items-center gap-1"
                             >
-                              <span>Open in Full Browser Tab</span>
+                              <span>Open Full Tab</span>
                               <ExternalLink className="w-3 h-3" />
                             </a>
                           </div>
@@ -878,12 +931,19 @@ export default function App() {
 
                     {(selectedArtifact.category === 'image' ||
                       selectedArtifact.category === 'video') && (
-                      <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#10131A] flex items-center justify-center p-2">
-                        <img
-                          src={selectedArtifact.url}
-                          alt={selectedArtifact.title}
-                          className="max-w-full rounded"
-                        />
+                      <div className="space-y-3">
+                        <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#10131A] flex items-center justify-center p-2">
+                          <img
+                            src={selectedArtifact.url}
+                            alt={selectedArtifact.title}
+                            className="max-w-full rounded"
+                          />
+                        </div>
+                        {selectedArtifact.preview_data?.engine && (
+                          <div className="p-2.5 rounded-lg bg-[#11141C] border border-white/[0.07] text-[11px] font-mono text-slate-400">
+                            Engine: <span className="text-slate-200">{selectedArtifact.preview_data.engine}</span>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -892,18 +952,18 @@ export default function App() {
                 <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
                   <FolderOpen className="w-8 h-8 mb-2 text-slate-600" />
                   <p className="text-xs leading-relaxed">
-                    No files selected. Ask the AI in chat to make an Excel spreadsheet,
-                    PDF report, chart, or web app and it will open here automatically!
+                    No files selected. Ask the AI in chat to generate an image, Excel
+                    spreadsheet, PDF report, or web app!
                   </p>
                 </div>
               )}
 
               {artifacts.length > 0 && (
-                <div className="h-40 shrink-0 border-t border-white/[0.075] bg-[#0B0D12] p-3 overflow-y-auto">
+                <div className="h-44 shrink-0 border-t border-white/[0.075] bg-[#0B0D12] p-3 overflow-y-auto">
                   <div className="text-[11px] font-medium text-slate-400 mb-2">
                     All Created Files ({artifacts.length})
                   </div>
-                  <div className="space-y-1">
+                  <div className="space-y-1.5">
                     {artifacts.map((art) => (
                       <div
                         key={art.id}
@@ -911,10 +971,10 @@ export default function App() {
                           setSelectedArtifact(art)
                           setActiveSheetIdx(0)
                         }}
-                        className={`group w-full text-left px-2.5 py-1.5 rounded-lg text-xs flex items-center justify-between gap-2 cursor-pointer transition ${
+                        className={`w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-center justify-between gap-2 cursor-pointer transition ${
                           selectedArtifact?.id === art.id
                             ? 'bg-[#D97757]/15 border border-[#D97757]/40 text-white'
-                            : 'hover:bg-white/[0.04] text-slate-300 border border-transparent'
+                            : 'bg-[#12151E] hover:bg-white/[0.06] text-slate-300 border border-white/[0.05]'
                         }`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
@@ -927,8 +987,8 @@ export default function App() {
                           </span>
                           <button
                             onClick={(e) => handleDeleteArtifact(e, art.id)}
-                            title="Permanently delete file from disk & database"
-                            className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-400 p-0.5 transition"
+                            title="Delete file permanently"
+                            className="text-slate-400 hover:text-rose-400 p-1 rounded hover:bg-rose-500/10 transition"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
@@ -955,7 +1015,7 @@ export default function App() {
                     Hardware Auto-Tuner (Desktop & Laptop Portability)
                   </h2>
                   <p className="text-xs text-slate-400">
-                    Automatically detects whether you are on your RTX 4070 SUPER Desktop or Intel Core Ultra 258V Laptop
+                    Adapts automatically between your RTX 4070 SUPER Desktop and Intel Core Ultra 258V Laptop
                   </p>
                 </div>
               </div>
@@ -1230,14 +1290,14 @@ export default function App() {
   )
 }
 
-function MessageRow({ msg, onSelectArtifact }) {
+function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
   const [thinkOpen, setThinkOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const isUser = msg.role === 'user'
 
   return (
     <div
-      className={`rounded-xl p-4 transition ${
+      className={`rounded-xl p-3.5 sm:p-4 transition ${
         isUser
           ? 'bg-[#131722] border border-white/[0.08]'
           : 'bg-[#0E1017] border border-white/[0.06]'
@@ -1292,20 +1352,20 @@ function MessageRow({ msg, onSelectArtifact }) {
             >
               <div
                 onClick={() => setToolsOpen((v) => !v)}
-                className="flex items-center justify-between cursor-pointer"
+                className="flex items-center justify-between cursor-pointer gap-2"
               >
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   {tc.status === 'running' ? (
-                    <Loader2 className="w-3.5 h-3.5 text-[#D97757] animate-spin" />
+                    <Loader2 className="w-3.5 h-3.5 text-[#D97757] animate-spin shrink-0" />
                   ) : (
-                    <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981]" />
+                    <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
                   )}
-                  <span className="text-slate-200 font-semibold">{tc.name}</span>
-                  <span className="text-slate-400 truncate max-w-xs">
+                  <span className="text-slate-200 font-semibold truncate">{tc.name}</span>
+                  <span className="text-slate-400 truncate hidden sm:inline">
                     {tc.summary || ''}
                   </span>
                 </div>
-                <span className="text-[11px] text-slate-400 tabular-nums">
+                <span className="text-[11px] text-slate-400 tabular-nums shrink-0">
                   {tc.duration_ms ? `${tc.duration_ms}ms` : 'running...'}
                 </span>
               </div>
@@ -1326,13 +1386,14 @@ function MessageRow({ msg, onSelectArtifact }) {
         />
       )}
 
+      {/* Inline File Cards with Direct Preview AND Direct Delete Button */}
       {msg.artifacts && msg.artifacts.length > 0 && (
         <div className="mt-3 pt-3 border-t border-white/[0.07] grid grid-cols-1 sm:grid-cols-2 gap-2.5">
           {msg.artifacts.map((art) => (
             <div
               key={art.id}
               onClick={() => onSelectArtifact(art)}
-              className="p-3 rounded-lg bg-[#141822] hover:bg-[#1A202E] border border-[#D97757]/35 cursor-pointer flex items-center justify-between gap-3 transition"
+              className="p-3 rounded-lg bg-[#141822] hover:bg-[#1A202E] border border-[#D97757]/35 cursor-pointer flex items-center justify-between gap-2 transition"
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
@@ -1346,10 +1407,18 @@ function MessageRow({ msg, onSelectArtifact }) {
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
-                <span className="text-[11px] font-medium text-[#D97757] flex items-center gap-1">
+                <span className="text-[11px] font-medium text-[#D97757] flex items-center gap-1 px-2 py-1 rounded bg-[#D97757]/10">
                   <Eye className="w-3.5 h-3.5" />
-                  <span>Preview / Download</span>
+                  <span>Open</span>
                 </span>
+                <button
+                  type="button"
+                  onClick={(e) => onDeleteArtifact(e, art.id)}
+                  title="Permanently delete this file"
+                  className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/25 transition"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
           ))}
@@ -1380,7 +1449,7 @@ function SpreadsheetPreview({ artifact, activeSheetIdx, setActiveSheetIdx }) {
   if (sheets.length === 0) {
     return (
       <div className="p-4 text-xs text-slate-400">
-        Excel file ready. Click <strong>Download File</strong> above to open in Excel.
+        Excel file ready. Click <strong>Download</strong> above to open in Excel.
       </div>
     )
   }
