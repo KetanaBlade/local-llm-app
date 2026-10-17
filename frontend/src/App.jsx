@@ -72,6 +72,10 @@ export default function App() {
   const [pullProgress, setPullProgress] = useState(null)
   const [customModelName, setCustomModelName] = useState('')
   const [flushingVram, setFlushingVram] = useState(false)
+  const [modelHubTab, setModelHubTab] = useState('llm')
+  const [deletingModel, setDeletingModel] = useState(null)
+  const [customImageUrl, setCustomImageUrl] = useState('')
+  const [customImageFilename, setCustomImageFilename] = useState('')
 
   // Sleep mode (0 MB VRAM) & graceful shutdown state
   const [isSleeping, setIsSleeping] = useState(false)
@@ -332,6 +336,76 @@ export default function App() {
     }
   }
 
+  const handleDeleteModel = async (e, modelName, modelType = 'llm') => {
+    if (e) e.stopPropagation()
+    const confirmMsg =
+      modelType === 'image'
+        ? `Are you sure you want to permanently delete the image checkpoint "${modelName}" from disk to reclaim storage?`
+        : `Are you sure you want to permanently delete the LLM model "${modelName}" from your machine?`
+    if (!window.confirm(confirmMsg)) return
+
+    setDeletingModel(modelName)
+    try {
+      const res = await fetch('/api/models/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: modelName, model_type: modelType }),
+      })
+      if (res.ok) {
+        await fetchSystemStatus()
+        if (selectedModel === modelName) {
+          setSelectedModel('llama3.2:3b')
+        }
+      }
+    } catch (err) {
+      console.error('Failed to delete model:', err)
+    } finally {
+      setDeletingModel(null)
+    }
+  }
+
+  const handleDownloadImageModel = async (url, filename) => {
+    if (!url || pullingModel) return
+    const cleanFn = (filename || 'custom_model.safetensors').trim()
+    setPullingModel(cleanFn)
+    setPullProgress({ status: 'Starting image model download...', percent: 0 })
+
+    try {
+      const r = await fetch('/api/models/image/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, filename: cleanFn }),
+      })
+      const reader = r.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+        for (const chunk of parts) {
+          if (chunk.startsWith('data: ')) {
+            try {
+              const ev = JSON.parse(chunk.slice(6))
+              setPullProgress(ev)
+            } catch {}
+          }
+        }
+      }
+      await fetchSystemStatus()
+      setCustomImageUrl('')
+      setCustomImageFilename('')
+    } catch (e) {
+      console.error('Image model download failed:', e)
+    } finally {
+      setPullingModel(null)
+      setPullProgress(null)
+    }
+  }
+
   const handleSendPrompt = async (overrideText) => {
     const text = (overrideText ?? promptInput).trim()
     if (!text || isStreaming) return
@@ -507,6 +581,7 @@ export default function App() {
   const hw = systemStatus?.hardware
   const settings = systemStatus?.settings
   const installedModels = systemStatus?.installed_models || []
+  const imageModels = systemStatus?.image_models || []
   const network = systemStatus?.network
   const isOfflineOnly = settings?.air_gap_mode !== false
 
@@ -1457,15 +1532,16 @@ export default function App() {
 
       {/* MODEL HUB MODAL */}
       {modelModalOpen && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between">
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            {/* Header */}
+            <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between shrink-0">
               <div>
                 <h2 className="text-sm font-semibold text-white">
-                  Download & Switch Local AI Models
+                  Local Model Hub & Downloader
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Switch models anytime—even in the middle of a conversation.
+                  Manage installed models, download new checkpoints, and reclaim storage.
                 </p>
               </div>
               <button
@@ -1476,14 +1552,47 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-5 space-y-5 max-h-[80vh] overflow-y-auto">
+            {/* Tab Bar */}
+            <div className="flex border-b border-white/[0.08] px-5 bg-[#0D0F14] shrink-0">
+              <button
+                onClick={() => setModelHubTab('llm')}
+                className={`py-2.5 px-3 sm:px-4 text-xs font-semibold border-b-2 flex items-center gap-2 transition ${
+                  modelHubTab === 'llm'
+                    ? 'border-[#D97757] text-white'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <BookOpen className="w-4 h-4 text-[#D97757]" />
+                <span>Conversational LLMs</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/[0.08] text-slate-300 font-mono">
+                  {installedModels.length}
+                </span>
+              </button>
+              <button
+                onClick={() => setModelHubTab('image')}
+                className={`py-2.5 px-3 sm:px-4 text-xs font-semibold border-b-2 flex items-center gap-2 transition ${
+                  modelHubTab === 'image'
+                    ? 'border-purple-500 text-white'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ImageIcon className="w-4 h-4 text-purple-400" />
+                <span>Image Models</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-mono">
+                  {imageModels.length}
+                </span>
+              </button>
+            </div>
+
+            {/* Content Area */}
+            <div className="p-5 space-y-5 overflow-y-auto flex-1">
               {pullingModel && pullProgress && (
                 <div className="p-3.5 rounded-xl bg-[#D97757]/15 border border-[#D97757]/40 space-y-2">
                   <div className="flex items-center justify-between text-xs font-mono">
-                    <span className="text-white">
+                    <span className="text-white truncate max-w-[80%]">
                       Downloading <strong>{pullingModel}</strong>: {pullProgress.status}
                     </span>
-                    <span className="text-[#D97757] tabular-nums">
+                    <span className="text-[#D97757] tabular-nums font-semibold">
                       {pullProgress.percent || 0}%
                     </span>
                   </div>
@@ -1496,92 +1605,321 @@ export default function App() {
                 </div>
               )}
 
-              <div>
-                <div className="text-xs font-medium text-slate-300 mb-2">
-                  Recommended LLM Models for {hw?.profile_label}
-                </div>
-                <div className="space-y-2">
-                  {(hw?.recommended_models || []).map((rec) => {
-                    const isInstalled = installedModels.some(
-                      (m) => m.id === rec.id || m.id.startsWith(rec.id)
-                    )
-                    return (
-                      <div
-                        key={rec.id}
-                        className="p-3 rounded-xl bg-[#141821] border border-white/[0.07] flex items-center justify-between gap-3"
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-semibold text-white font-mono">
-                              {rec.id}
-                            </span>
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#D97757]/20 text-[#D97757]">
-                              {rec.badge}
-                            </span>
-                            <span className="text-[11px] font-mono text-slate-400 tabular-nums">
-                              ~{rec.size_gb} GB
-                            </span>
+              {/* TAB 1: CONVERSATIONAL LLMs */}
+              {modelHubTab === 'llm' && (
+                <>
+                  {/* Installed LLM Models with Delete buttons */}
+                  <div>
+                    <div className="text-xs font-medium text-slate-300 mb-2">
+                      Installed Conversational Models
+                    </div>
+                    <div className="space-y-2">
+                      {installedModels.map((m) => (
+                        <div
+                          key={m.id}
+                          className="p-3 rounded-xl bg-[#141821] border border-white/[0.07] flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-xs font-semibold text-white font-mono">
+                                {m.name}
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-400 tabular-nums">
+                                ~{m.size_gb} GB
+                              </span>
+                              {selectedModel === m.id && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">
+                                  Active
+                                </span>
+                              )}
+                            </div>
                           </div>
-                          <div className="text-xs text-slate-300 mt-0.5">{rec.role}</div>
-                          <div className="text-[11px] text-slate-400 mt-0.5">
-                            Speed & Memory Fit: {rec.fit}
-                          </div>
-                        </div>
 
-                        <div className="shrink-0">
-                          {isInstalled ? (
+                          <div className="flex items-center gap-1.5 shrink-0">
                             <button
                               onClick={() => {
-                                handleSwitchModel(rec.id)
+                                handleSwitchModel(m.id)
                                 setModelModalOpen(false)
                               }}
                               className={`h-8 px-3 rounded-lg text-xs font-medium transition ${
-                                selectedModel === rec.id
+                                selectedModel === m.id
                                   ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                   : 'bg-white/[0.08] hover:bg-white/[0.14] text-white'
                               }`}
                             >
-                              {selectedModel === rec.id ? 'Selected' : 'Switch to This'}
+                              {selectedModel === m.id ? 'Selected' : 'Switch'}
                             </button>
-                          ) : (
                             <button
-                              disabled={Boolean(pullingModel)}
-                              onClick={() => handlePullModel(rec.id)}
-                              className="h-8 px-3 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium transition"
+                              onClick={(e) => handleDeleteModel(e, m.id, 'llm')}
+                              disabled={deletingModel === m.id}
+                              className="h-8 w-8 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center justify-center transition"
+                              title={`Delete ${m.id} to reclaim disk space`}
                             >
-                              Download ({rec.size_gb} GB)
+                              <Trash2 className="w-3.5 h-3.5" />
                             </button>
-                          )}
+                          </div>
                         </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
+                      ))}
+                    </div>
+                  </div>
 
-              <div className="pt-3 border-t border-white/[0.08]">
-                <label className="block text-xs text-slate-300 mb-1.5">
-                  Or Download Any Model from Ollama (e.g.{' '}
-                  <code className="text-slate-200">gemma2:9b</code>,{' '}
-                  <code className="text-slate-200">phi4:14b</code>)
-                </label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={customModelName}
-                    onChange={(e) => setCustomModelName(e.target.value)}
-                    placeholder="Enter model name (e.g. gemma2:9b)..."
-                    className="flex-1 h-9 px-3 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white"
-                  />
-                  <button
-                    disabled={!customModelName.trim() || Boolean(pullingModel)}
-                    onClick={() => handlePullModel(customModelName.trim())}
-                    className="h-9 px-4 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium"
-                  >
-                    Download
-                  </button>
-                </div>
-              </div>
+                  {/* Recommended Models */}
+                  <div>
+                    <div className="text-xs font-medium text-slate-300 mb-2">
+                      Recommended Models for {hw?.profile_label}
+                    </div>
+                    <div className="space-y-2">
+                      {(hw?.recommended_models || []).map((rec) => {
+                        const isInstalled = installedModels.some(
+                          (m) => m.id === rec.id || m.id.startsWith(rec.id)
+                        )
+                        return (
+                          <div
+                            key={rec.id}
+                            className="p-3 rounded-xl bg-[#141821] border border-white/[0.07] flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-semibold text-white font-mono">
+                                  {rec.id}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#D97757]/20 text-[#D97757]">
+                                  {rec.badge}
+                                </span>
+                                <span className="text-[11px] font-mono text-slate-400 tabular-nums">
+                                  ~{rec.size_gb} GB
+                                </span>
+                              </div>
+                              <div className="text-xs text-slate-300 mt-0.5">{rec.role}</div>
+                              <div className="text-[11px] text-slate-400 mt-0.5">
+                                Speed & Fit: {rec.fit}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {isInstalled ? (
+                                <button
+                                  onClick={() => {
+                                    handleSwitchModel(rec.id)
+                                    setModelModalOpen(false)
+                                  }}
+                                  className={`h-8 px-3 rounded-lg text-xs font-medium transition ${
+                                    selectedModel === rec.id
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-white/[0.08] hover:bg-white/[0.14] text-white'
+                                  }`}
+                                >
+                                  {selectedModel === rec.id ? 'Active' : 'Switch'}
+                                </button>
+                              ) : (
+                                <button
+                                  disabled={Boolean(pullingModel)}
+                                  onClick={() => handlePullModel(rec.id)}
+                                  className="h-8 px-3 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium transition"
+                                >
+                                  Download ({rec.size_gb} GB)
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Custom Ollama Download */}
+                  <div className="pt-3 border-t border-white/[0.08]">
+                    <label className="block text-xs text-slate-300 mb-1.5">
+                      Or Pull Any Model from Ollama (e.g.{' '}
+                      <code className="text-slate-200">hermes3:8b</code>,{' '}
+                      <code className="text-slate-200">mistral-nemo:12b</code>)
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={customModelName}
+                        onChange={(e) => setCustomModelName(e.target.value)}
+                        placeholder="Enter model name (e.g. hermes3:8b)..."
+                        className="flex-1 h-9 px-3 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white"
+                      />
+                      <button
+                        disabled={!customModelName.trim() || Boolean(pullingModel)}
+                        onClick={() => handlePullModel(customModelName.trim())}
+                        className="h-9 px-4 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium"
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* TAB 2: IMAGE DIFFUSION MODELS */}
+              {modelHubTab === 'image' && (
+                <>
+                  {/* Installed Image Models with Delete buttons */}
+                  <div>
+                    <div className="text-xs font-medium text-slate-300 mb-2">
+                      Installed Image Checkpoints (in <code className="text-slate-400">models/image/</code>)
+                    </div>
+                    {imageModels.length === 0 ? (
+                      <div className="p-4 rounded-xl bg-[#141821] border border-white/[0.07] text-xs text-slate-400">
+                        No local diffusion checkpoints installed yet.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {imageModels.map((im) => (
+                          <div
+                            key={im.filename}
+                            className="p-3 rounded-xl bg-[#141821] border border-white/[0.07] flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <ImageIcon className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                                <span className="text-xs font-semibold text-white font-mono truncate">
+                                  {im.label.split('(')[0].trim()}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                                  {im.style}
+                                </span>
+                                <span className="text-[11px] font-mono text-slate-400 tabular-nums shrink-0">
+                                  ~{im.size_gb} GB
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-mono text-slate-400 mt-0.5 truncate">
+                                {im.filename}
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={(e) => handleDeleteModel(e, im.filename, 'image')}
+                              disabled={deletingModel === im.filename}
+                              className="h-8 w-8 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 flex items-center justify-center transition shrink-0"
+                              title={`Delete ${im.filename} from disk to free ${im.size_gb} GB`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Curated Checkpoints to Download */}
+                  <div>
+                    <div className="text-xs font-medium text-slate-300 mb-2">
+                      Curated Checkpoints (One-Click Downloads)
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        {
+                          name: 'AbsoluteReality V1.8.1',
+                          desc: 'Photorealism, Studio Portraits & Character Art',
+                          badge: 'Photorealism',
+                          size_gb: '2.1',
+                          filename: 'absolutereality_v181.safetensors',
+                          url: 'https://huggingface.co/digiplay/AbsoluteReality_v1.8.1/resolve/main/absolutereality_v181.safetensors',
+                        },
+                        {
+                          name: 'CyberRealistic V4.2',
+                          desc: 'High-detail 35mm DSLR photography & natural skin textures',
+                          badge: 'DSLR Photo',
+                          size_gb: '2.1',
+                          filename: 'CyberRealistic_V4.2_FP16.safetensors',
+                          url: 'https://huggingface.co/Cyberdelia/CyberRealistic/resolve/main/CyberRealistic_V4.2_FP16.safetensors',
+                        },
+                        {
+                          name: 'MeinaMix V11',
+                          desc: 'Vibrant anime, manga illustration & cel-shaded characters',
+                          badge: 'Anime / Manga',
+                          size_gb: '2.1',
+                          filename: 'MeinaMix_V11.safetensors',
+                          url: 'https://huggingface.co/Meina/MeinaMix/resolve/main/MeinaMix_V11.safetensors',
+                        },
+                        {
+                          name: 'DreamShaper 8',
+                          desc: 'Fantasy concept art, 3D character renders & artistic styles',
+                          badge: 'Concept Art',
+                          size_gb: '2.1',
+                          filename: 'DreamShaper_8_pruned.safetensors',
+                          url: 'https://huggingface.co/Lykon/DreamShaper/resolve/main/DreamShaper_8_pruned.safetensors',
+                        },
+                      ].map((chk) => {
+                        const isInstalled = imageModels.some(
+                          (im) => im.filename.toLowerCase() === chk.filename.toLowerCase()
+                        )
+                        return (
+                          <div
+                            key={chk.filename}
+                            className="p-3 rounded-xl bg-[#141821] border border-white/[0.07] flex items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-semibold text-white font-mono">
+                                  {chk.name}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                                  {chk.badge}
+                                </span>
+                                <span className="text-[11px] font-mono text-slate-400 tabular-nums">
+                                  ~{chk.size_gb} GB
+                                </span>
+                              </div>
+                              <div className="text-xs text-slate-300 mt-0.5">{chk.desc}</div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {isInstalled ? (
+                                <span className="h-8 px-3 rounded-lg text-xs font-medium inline-flex items-center bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  Installed
+                                </span>
+                              ) : (
+                                <button
+                                  disabled={Boolean(pullingModel)}
+                                  onClick={() => handleDownloadImageModel(chk.url, chk.filename)}
+                                  className="h-8 px-3 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-medium transition"
+                                >
+                                  Download ({chk.size_gb} GB)
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Direct URL Downloader */}
+                  <div className="pt-3 border-t border-white/[0.08] space-y-2">
+                    <label className="block text-xs text-slate-300">
+                      Download Any Checkpoint via Direct URL (Hugging Face / Civitai):
+                    </label>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        value={customImageUrl}
+                        onChange={(e) => setCustomImageUrl(e.target.value)}
+                        placeholder="Paste direct .safetensors download URL..."
+                        className="flex-1 h-9 px-3 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white"
+                      />
+                      <input
+                        type="text"
+                        value={customImageFilename}
+                        onChange={(e) => setCustomImageFilename(e.target.value)}
+                        placeholder="Filename (e.g. model.safetensors)..."
+                        className="w-full sm:w-48 h-9 px-3 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white"
+                      />
+                      <button
+                        disabled={!customImageUrl.trim() || Boolean(pullingModel)}
+                        onClick={() => handleDownloadImageModel(customImageUrl.trim(), customImageFilename.trim())}
+                        className="h-9 px-4 rounded-lg bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white text-xs font-medium shrink-0"
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>

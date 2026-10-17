@@ -54,7 +54,7 @@ from .database import (
     update_settings,
 )
 from .hardware import build_hardware_profile
-from .tools import ARTIFACTS_DIR, list_available_sd_models
+from .tools import ARTIFACTS_DIR, list_available_sd_models, SD_MODEL_DIR
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -139,6 +139,16 @@ class UnloadModelRequest(BaseModel):
 
 class FlushVramRequest(BaseModel):
     except_model: Optional[str] = None
+
+
+class DeleteModelRequest(BaseModel):
+    name: str
+    model_type: str = "llm"  # "llm" or "image"
+
+
+class DownloadImageModelRequest(BaseModel):
+    url: str
+    filename: str
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -253,6 +263,79 @@ async def api_unload_model(req: UnloadModelRequest):
         return {"status": "unloaded", "model": req.model}
     except Exception as exc:
         return {"status": "error", "detail": str(exc)}
+
+
+@app.post("/api/models/delete")
+async def api_delete_model(req: DeleteModelRequest):
+    if req.model_type == "image":
+        clean_name = Path(req.name).name
+        target = SD_MODEL_DIR / clean_name
+        if target.exists() and target.is_file():
+            target.unlink()
+            return {"status": "deleted", "name": req.name, "type": "image"}
+        return JSONResponse(status_code=404, content={"status": "error", "detail": "Image model file not found"})
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                r = await client.request(
+                    "DELETE",
+                    f"{OLLAMA_BASE}/api/delete",
+                    json={"name": req.name},
+                )
+                if r.status_code == 200:
+                    return {"status": "deleted", "name": req.name, "type": "llm"}
+                return JSONResponse(status_code=r.status_code, content={"status": "error", "detail": r.text})
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"status": "error", "detail": str(exc)})
+
+
+@app.post("/api/models/image/download")
+async def api_download_image_model(req: DownloadImageModelRequest):
+    raw_filename = Path(req.filename).name.strip()
+    if not raw_filename.endswith((".safetensors", ".gguf", ".ckpt")):
+        raw_filename += ".safetensors"
+
+    target_file = SD_MODEL_DIR / raw_filename
+    part_file = SD_MODEL_DIR / f"{raw_filename}.part"
+
+    async def event_generator():
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            }
+            async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+                async with client.stream("GET", req.url.strip(), headers=headers) as resp:
+                    if resp.status_code >= 400:
+                        yield f"data: {json.dumps({'status': 'error', 'error': f'Download failed: HTTP {resp.status_code}'})}\n\n"
+                        return
+
+                    total_bytes = int(resp.headers.get("content-length") or 0)
+                    downloaded = 0
+                    last_pct = 0.0
+
+                    with open(part_file, "wb") as f:
+                        async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                            if not chunk:
+                                continue
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            pct = round((downloaded / total_bytes) * 100, 1) if total_bytes else 0
+                            if pct - last_pct >= 0.5 or pct >= 100.0:
+                                last_pct = pct
+                                yield f"data: {json.dumps({'status': 'downloading', 'completed': downloaded, 'total': total_bytes, 'percent': pct})}\n\n"
+
+            if part_file.exists():
+                part_file.replace(target_file)
+            yield f"data: {json.dumps({'status': 'success', 'percent': 100, 'filename': raw_filename})}\n\n"
+        except Exception as exc:
+            if part_file.exists():
+                try:
+                    part_file.unlink()
+                except Exception:
+                    pass
+            yield f"data: {json.dumps({'status': 'error', 'error': str(exc)})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.post("/api/models/flush")
