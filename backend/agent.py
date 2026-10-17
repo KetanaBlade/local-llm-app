@@ -246,8 +246,11 @@ You can answer general questions conversationally AND you have local tools to cr
 
 Guidelines:
 - For normal questions or conversation, simply reply naturally and clearly without calling any tools.
-- Whenever the user asks you to make an Excel spreadsheet, a PDF or Word document, a chart, a picture, a video/animation, or an interactive app, call the matching tool so the real file is created for them.
-- When calling `generate_visual_media` for an image: preserve the user's intended artistic or realistic style. If the user requested a realistic, photorealistic, or real-life image, explicitly write photographic terms into the `prompt` (e.g. 'candid 35mm photo of...', 'photorealistic DSLR photograph', 'natural lighting').
+- When calling `generate_visual_media` for an image: select the matching `style` parameter:
+  * `photorealistic` for real-life camera photos, portraits, landscapes, or DSLR shots.
+  * `anime` for Japanese anime, manga, cel-shaded art, or cute avatars.
+  * `artistic` for fantasy illustrations, concept art, 3D character design, or digital paintings.
+  * `auto` to let the local router infer the style from the prompt.
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""
@@ -286,6 +289,7 @@ async def execute_tool_call(
             res = await tool_generate_visual_media(
                 prompt=args.get("prompt", "Visual Synthesis"),
                 media_type=args.get("media_type", "image"),
+                style=args.get("style", "auto"),
                 chart_data=args.get("chart_data"),
                 active_model=active_model,
                 vram_handoff=vram_handoff,

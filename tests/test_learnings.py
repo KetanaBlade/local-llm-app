@@ -88,8 +88,60 @@ def test_context_compaction():
     print(f"[PASS] test_context_compaction: {notice}")
 
 
+def test_sd_multi_model_router():
+    from backend.tools import list_available_sd_models, resolve_sd_model_and_prompts
+
+    models = list_available_sd_models()
+    print(f"[TEST] Discovered {len(models)} diffusion models:")
+    for m in models.values():
+        print(f"  - {m['label']} ({m['filename']}, {m['size_gb']} GB)")
+
+    assert len(models) >= 3, f"Expected at least 3 models, got {len(models)}"
+
+    # 1. Test Photorealism routing
+    p_model, p_style, p_prompt, p_neg, p_engine = resolve_sd_model_and_prompts(
+        "a candid 35mm photo of a barista pouring coffee, real life, realistic",
+        requested_style="auto",
+    )
+    assert p_style == "photorealistic"
+    assert "realistic" in p_model.name.lower()
+    assert "raw photo" in p_prompt
+    assert "drawing" in p_neg
+    print(f"[PASS] Photorealism routed to: {p_model.name} ({p_engine})")
+
+    # 2. Test Anime routing
+    a_model, a_style, a_prompt, a_neg, a_engine = resolve_sd_model_and_prompts(
+        "kawaii magical girl with glowing staff in an anime city street, studio ghibli aesthetic",
+        requested_style="auto",
+    )
+    assert a_style == "anime"
+    assert "meina" in a_model.name.lower()
+    assert "anime" in a_prompt
+    assert "photorealistic" in a_neg
+    print(f"[PASS] Anime routed to: {a_model.name} ({a_engine})")
+
+    # 3. Test Artistic / Concept Art routing
+    c_model, c_style, c_prompt, c_neg, c_engine = resolve_sd_model_and_prompts(
+        "ancient floating obsidian monolith above a crystalline lake at sunset, concept art",
+        requested_style="auto",
+    )
+    assert c_style == "artistic"
+    assert "dreamshaper" in c_model.name.lower()
+    print(f"[PASS] Artistic routed to: {c_model.name} ({c_engine})")
+
+    # 4. Test Explicit requested_style override
+    o_model, o_style, _, _, _ = resolve_sd_model_and_prompts(
+        "cyberpunk street",
+        requested_style="photorealistic",
+    )
+    assert o_style == "photorealistic"
+    assert "realistic" in o_model.name.lower()
+    print("[PASS] Explicit style override works cleanly")
+
+
 if __name__ == "__main__":
     test_confine_to_workspace()
     test_date_grounding()
     test_context_compaction()
+    test_sd_multi_model_router()
     print("\n>>> ALL TESTS PASSED SUCCESSFULLY! <<<")

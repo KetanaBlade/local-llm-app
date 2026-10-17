@@ -51,7 +51,7 @@ from .database import (
     update_settings,
 )
 from .hardware import build_hardware_profile
-from .tools import ARTIFACTS_DIR
+from .tools import ARTIFACTS_DIR, list_available_sd_models
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -162,11 +162,21 @@ async def api_system_status(request: Request):
     port = request.url.port or 8000
     lan_url = f"http://{hw['lan_ip']}:{port}"
     qr_data_uri = _generate_qr_data_uri(lan_url)
+    sd_models = list_available_sd_models()
 
     return {
         "hardware": hw,
         "installed_models": installed,
         "running_models": running,
+        "image_models": [
+            {
+                "filename": m["filename"],
+                "style": m["style"],
+                "label": m["label"],
+                "size_gb": m["size_gb"],
+            }
+            for m in sd_models.values()
+        ],
         "settings": settings,
         "network": {
             "lan_ip": hw["lan_ip"],

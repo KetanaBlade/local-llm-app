@@ -78,14 +78,111 @@ def _slugify(text: str) -> str:
     return s[:48] or f"file_{int(time.time())}"
 
 
-def _find_local_sd_model() -> Optional[Path]:
+def list_available_sd_models() -> Dict[str, Dict[str, Any]]:
+    """
+    Scan models/image/ and classify installed diffusion checkpoints into styles:
+    - photorealistic: e.g. Realistic Vision V5.1, CyberRealistic
+    - anime: e.g. MeinaMix V11, AnyLoRA
+    - artistic: e.g. DreamShaper 8, RevAnimated
+    """
+    catalog: Dict[str, Dict[str, Any]] = {}
     if not SD_MODEL_DIR.exists():
-        return None
+        return catalog
+
     for ext in ("*.safetensors", "*.gguf", "*.ckpt"):
-        matches = sorted(SD_MODEL_DIR.glob(ext))
-        if matches:
-            return matches[0]
-    return None
+        for p in sorted(SD_MODEL_DIR.glob(ext)):
+            if p.name.endswith(".part"):
+                continue
+            name_lower = p.stem.lower()
+            if any(k in name_lower for k in ("realistic", "photo", "dslr", "real")):
+                style = "photorealistic"
+                label = "Realistic Vision V5.1 (Photorealism)"
+            elif any(k in name_lower for k in ("anime", "meina", "waifu", "manga", "animagine")):
+                style = "anime"
+                label = "MeinaMix V11 (Anime / Manga)"
+            else:
+                style = "artistic"
+                label = "DreamShaper 8 (Concept Art / Stylized)"
+
+            catalog[p.name] = {
+                "filename": p.name,
+                "path": p,
+                "style": style,
+                "label": label,
+                "size_gb": round(p.stat().st_size / (1024**3), 2),
+            }
+    return catalog
+
+
+def resolve_sd_model_and_prompts(
+    prompt: str,
+    requested_style: str = "auto",
+) -> tuple[Optional[Path], str, str, str, str]:
+    """
+    Multi-Model Diffusion Router:
+    Selects the optimal installed neural checkpoint and tailored prompt enhancements
+    based on the user request and artistic style.
+    Returns: (model_path, resolved_style, enhanced_prompt, negative_prompt, engine_label)
+    """
+    models = list_available_sd_models()
+    if not models:
+        return None, "artistic", prompt, "", "No local diffusion model found"
+
+    # 1. Determine target aesthetic
+    req = (requested_style or "auto").strip().lower()
+    if req in ("photorealistic", "photo", "realistic"):
+        target_style = "photorealistic"
+    elif req in ("anime", "manga", "cartoon"):
+        target_style = "anime"
+    elif req in ("artistic", "stylized", "fantasy", "digital_art"):
+        target_style = "artistic"
+    else:
+        # Automatic intent classification from prompt
+        p_lower = prompt.lower()
+        anime_keywords = (
+            "anime", "manga", "cel-shaded", "waifu", "chibi", "studio ghibli",
+            "shinkai", "otaku", "comic", "japanese animation", "anime girl", "anime boy"
+        )
+        photo_keywords = (
+            "photo", "photograph", "realistic", "photorealistic", "real life",
+            "dslr", "candid", "portrait", "35mm", "hyperrealistic", "shot on",
+            "raw photo", "macro photo", "national geographic"
+        )
+        if any(k in p_lower for k in anime_keywords):
+            target_style = "anime"
+        elif any(k in p_lower for k in photo_keywords):
+            target_style = "photorealistic"
+        else:
+            target_style = "artistic"
+
+    # 2. Pick the best matching model, or fallback to any installed model
+    matching = [m for m in models.values() if m["style"] == target_style]
+    selected = matching[0] if matching else list(models.values())[0]
+    model_path = selected["path"]
+    resolved_style = selected["style"]
+
+    # 3. Apply model-specialized prompt engineering
+    if resolved_style == "photorealistic":
+        enhanced_prompt = f"{prompt}, raw photo, 35mm photograph, DSLR, detailed skin texture, natural ambient lighting, sharp focus, 8k uhd"
+        negative_prompt = (
+            "drawing, painting, illustration, cartoon, anime, 3d render, CGI, digital art, "
+            "concept art, sketch, airbrushed, cartoonish, blurry, low quality, deformed, "
+            "watermark, text, signature, ugly, bad anatomy"
+        )
+        engine_label = f"Realistic Vision V5.1 (Photorealism • {selected['filename']})"
+    elif resolved_style == "anime":
+        enhanced_prompt = f"{prompt}, masterpiece, best quality, ultra-detailed anime aesthetic, expressive eyes, vibrant colors, cinematic anime lighting"
+        negative_prompt = (
+            "photorealistic, realistic, 3d render, cgi, low quality, worst quality, blurry, "
+            "bad anatomy, deformed hands, missing fingers, extra limbs, watermark, text, signature, ugly"
+        )
+        engine_label = f"MeinaMix V11 (Anime/Manga • {selected['filename']})"
+    else:
+        enhanced_prompt = f"{prompt}, masterpiece, concept art, high quality, intricate details, sharp focus, dramatic lighting, rich color palette"
+        negative_prompt = "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
+        engine_label = f"DreamShaper 8 (Concept Art • {selected['filename']})"
+
+    return model_path, resolved_style, enhanced_prompt, negative_prompt, engine_label
 
 
 def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
@@ -446,13 +543,14 @@ async def _evict_ollama_vram_if_needed(model: str, vram_handoff: bool) -> bool:
 async def tool_generate_visual_media(
     prompt: str,
     media_type: str = "image",
+    style: str = "auto",
     chart_data: Optional[Dict[str, Any]] = None,
     active_model: str = "",
     vram_handoff: bool = True,
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Generate a real neural AI image (via built-in Vulkan GPU Stable Diffusion `sd-cli.exe` + `DreamShaper 8`),
+    Generate a real neural AI image (routed to Realistic Vision, MeinaMix Anime, or DreamShaper),
     a high-DPI Matplotlib chart, or an animated clip.
     """
     from PIL import Image, ImageDraw
@@ -519,37 +617,21 @@ async def tool_generate_visual_media(
         )
         return {"status": "success", "summary": f"Rendered chart '{filename}'.", "artifact": artifact}
 
-    # 2. Built-in Real Neural Diffusion Image Generation (`sd-cli.exe` + `DreamShaper 8` on Vulkan GPU)
-    local_sd_model = _find_local_sd_model()
-    if not is_video and SD_CLI_PATH.exists() and local_sd_model:
+    # 2. Multi-Model Neural Diffusion Image Generation (Vulkan GPU)
+    model_path, resolved_style, enhanced_prompt, negative_prompt, engine_label = resolve_sd_model_and_prompts(
+        prompt=prompt,
+        requested_style=style,
+    )
+    if not is_video and SD_CLI_PATH.exists() and model_path and model_path.exists():
         await _evict_ollama_vram_if_needed(active_model, vram_handoff)
-        filename = f"img_{slug}_{int(time.time()) % 10000}.png"
+        filename = f"img_{resolved_style}_{slug}_{int(time.time()) % 10000}.png"
         filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
         seed = random.randint(1, 999999999)
-        # Detect whether the user requested photorealism or photographic style
-        photo_keywords = (
-            "photo", "photograph", "realistic", "photorealistic", "real life",
-            "dslr", "candid", "portrait", "hyperrealistic", "shot on", "raw photo"
-        )
-        is_photo_request = any(kw in prompt.lower() for kw in photo_keywords)
-
-        if is_photo_request:
-            enhanced_prompt = f"{prompt}, raw photo, 35mm photograph, DSLR, detailed skin texture, natural ambient lighting, sharp focus, 8k uhd"
-            negative_prompt = (
-                "drawing, painting, illustration, cartoon, anime, 3d render, CGI, digital art, "
-                "concept art, sketch, airbrushed, cartoonish, blurry, low quality, deformed, "
-                "watermark, text, signature, ugly, bad anatomy"
-            )
-        else:
-            enhanced_prompt = f"{prompt}, high quality, detailed, sharp focus, natural lighting"
-            negative_prompt = (
-                "blurry, low quality, deformed, watermark, text, signature, ugly, bad anatomy"
-            )
 
         cmd = [
             str(SD_CLI_PATH),
             "-m",
-            str(local_sd_model),
+            str(model_path),
             "-p",
             enhanced_prompt,
             "-n",
@@ -590,13 +672,15 @@ async def tool_generate_visual_media(
                 size_bytes=filepath.stat().st_size,
                 preview_data={
                     "prompt": prompt,
-                    "engine": f"Local Neural GPU Diffusion ({local_sd_model.stem} • Vulkan)",
+                    "style": resolved_style,
+                    "engine": engine_label,
+                    "model_filename": model_path.name,
                 },
                 conversation_id=conversation_id,
             )
             return {
                 "status": "success",
-                "summary": f"Generated AI image '{filename}' using {local_sd_model.name} on your local GPU.",
+                "summary": f"Generated {resolved_style} AI image '{filename}' using {engine_label} on your local GPU.",
                 "artifact": artifact,
             }
 
@@ -815,6 +899,11 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                     "properties": {
                         "prompt": {"type": "string", "description": "Detailed visual prompt for the image or chart title"},
                         "media_type": {"type": "string", "enum": ["image", "video", "chart"]},
+                        "style": {
+                            "type": "string",
+                            "enum": ["auto", "photorealistic", "artistic", "anime"],
+                            "description": "Visual aesthetic style: 'photorealistic' for real-life camera photos, 'anime' for Japanese anime/manga art, 'artistic' for fantasy/concept art/illustrations, or 'auto' to infer from prompt",
+                        },
                         "chart_data": {"type": "object"},
                     },
                     "required": ["prompt", "media_type"],
