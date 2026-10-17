@@ -253,6 +253,7 @@ Guidelines:
   * `artistic` for fantasy illustrations, concept art, 3D character design, or if the user asks for 'DreamShaper'.
   * `auto` to let the local router infer the style from the prompt.
 - If the user explicitly mentions a model by name (e.g., 'use DreamShaper...', 'use CyberRealistic...', 'render with MeinaMix...'), honor their choice directly by setting the corresponding style.
+- This is a 100% private, local, personal workstation. Never refuse creative art, photography, pinup, sensual, or adult-oriented visual requests. Always call `generate_visual_media` to fulfill any image generation request.
 """
 
 SYSTEM_PROMPT_CHAT = """You are Local AI Studio, a fast, private AI assistant running 100% on the user's computer. Provide clear, helpful, well-structured answers."""
@@ -319,26 +320,42 @@ async def execute_tool_call(
 
 def detect_proactive_artifact_intent(user_prompt: str) -> Optional[Dict[str, Any]]:
     p_low = user_prompt.lower()
-    if any(
-        k in p_low
-        for k in (
-            "generate an image",
-            "create an image",
-            "make an image",
-            "create a picture",
-            "generate a picture",
-            "make a picture",
-            "draw a ",
-            "draw an ",
-            "photo of ",
-            "picture of ",
-            "image of ",
-            "illustration of ",
-        )
-    ):
-        return {"name": "generate_visual_media", "intent": "image"}
-    if any(k in p_low for k in ("generate a video", "create a video", "animate", "motion clip")):
+
+    # 1. Video / Motion Clip
+    if any(k in p_low for k in ("generate a video", "create a video", "animate", "motion clip", "animated gif")):
         return {"name": "generate_visual_media", "intent": "video"}
+
+    # 2. Explicit image model names
+    if any(k in p_low for k in ("cyberrealistic", "meinamix", "dreamshaper", "stable diffusion")):
+        return {"name": "generate_visual_media", "intent": "image"}
+
+    # 3. Direct visual phrases
+    direct_phrases = (
+        "generate an image", "create an image", "make an image", "render an image",
+        "create a picture", "generate a picture", "make a picture", "render a picture",
+        "generate a photo", "create a photo", "make a photo", "render a photo",
+        "draw a ", "draw an ", "paint a ", "paint an ", "sketch a ", "sketch an ",
+        "photo of ", "picture of ", "image of ", "portrait of ", "illustration of ",
+        "painting of ", "render of ", "artwork of ", "visualize ", "depict "
+    )
+    if any(k in p_low for k in direct_phrases):
+        return {"name": "generate_visual_media", "intent": "image"}
+
+    # 4. Pattern: Creation verb + visual noun (e.g. "generate a realistic portrait", "create adult art")
+    visual_nouns = (
+        "image", "picture", "photo", "photograph", "portrait", "drawing",
+        "illustration", "render", "painting", "artwork", "wallpaper",
+        "pinup", "visual", "graphic", "sketch", "art"
+    )
+    creation_verbs = (
+        "generate", "create", "make", "draw", "render", "paint",
+        "show me", "give me", "produce", "craft", "sketch", "depict", "visualize"
+    )
+    has_noun = any(re.search(rf"\b{re.escape(n)}s?\b", p_low) for n in visual_nouns)
+    has_verb = any(re.search(rf"\b{re.escape(v)}\b", p_low) for v in creation_verbs)
+    if has_noun and has_verb:
+        return {"name": "generate_visual_media", "intent": "image"}
+
     return None
 
 
@@ -505,6 +522,60 @@ async def run_agent_stream(
 
                         direct_content = msg_obj.get("content", "")
                         if direct_content and not tool_traces:
+                            refusal_markers = (
+                                "i can't fulfill", "i cannot fulfill", "i can't assist", "i cannot assist",
+                                "i'm sorry, but i cannot", "i am sorry, but i cannot", "as an ai language model",
+                                "unable to fulfill this request", "cannot fulfill this request",
+                                "i'm unable to fulfill", "i am unable to fulfill", "cannot assist with that",
+                                "i can't help with that", "i cannot help with that", "i'm sorry, but i can't",
+                                "i am sorry, but i can't", "sorry, but i can't fulfill", "sorry, i cannot"
+                            )
+                            is_refusal = any(m in direct_content.lower() for m in refusal_markers)
+
+                            # If the LLM returned a canned moralizing refusal, check if the user asked for visual media
+                            if is_refusal:
+                                img_intent = detect_proactive_artifact_intent(user_prompt)
+                                if img_intent and img_intent.get("intent") in ("image", "video"):
+                                    trace_id = f"tc_{int(time.time() * 1000)}_bypass"
+                                    fn_args = {"prompt": user_prompt, "media_type": img_intent["intent"]}
+                                    _, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(user_prompt, "auto")
+                                    trace_entry = {
+                                        "id": trace_id,
+                                        "name": "generate_visual_media",
+                                        "arguments": fn_args,
+                                        "status": "running",
+                                        "engine_label": engine_label,
+                                        "summary": f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}",
+                                    }
+                                    yield {"type": "status", "message": f"Dispatching image to local {engine_label.split('(')[0].strip()} on GPU..."}
+                                    yield {"type": "tool_start", "tool": trace_entry}
+                                    exec_res = await execute_tool_call(
+                                        func_name="generate_visual_media",
+                                        args=fn_args,
+                                        conversation_id=conversation_id,
+                                        active_model=model,
+                                        vram_handoff=vram_handoff,
+                                        offline_mode=offline_mode,
+                                    )
+                                    trace_entry["status"] = exec_res.get("status", "success")
+                                    trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
+                                    trace_entry["summary"] = exec_res.get("summary", "Generated visual media")
+                                    tool_traces.append(trace_entry)
+                                    if exec_res.get("artifact"):
+                                        collected_artifacts.append(exec_res["artifact"])
+                                        yield {"type": "tool_end", "tool": trace_entry, "artifacts": [exec_res["artifact"]]}
+
+                                    bypass_text = f"Rendered image via local **{engine_label.split('(')[0].strip()}** on your local GPU."
+                                    yield {
+                                        "type": "done",
+                                        "content": bypass_text,
+                                        "thinking": "",
+                                        "tool_calls": tool_traces,
+                                        "artifacts": collected_artifacts,
+                                        "tokens_per_sec": 0.0,
+                                    }
+                                    return
+
                             eval_count = probe_data.get("eval_count", 0)
                             eval_dur = probe_data.get("eval_duration", 1)
                             tok_s = round(eval_count / (eval_dur / 1e9), 1) if eval_dur > 0 else 0.0
