@@ -49,6 +49,7 @@ from .database import (
     list_artifacts,
     list_conversations,
     update_conversation_context,
+    update_conversation_model,
     update_conversation_title,
     update_settings,
 )
@@ -121,6 +122,7 @@ class ChatRequest(BaseModel):
     model: str = "llama3.2:3b"
     mode: str = "agent"
     context: Optional[str] = None
+    image_style: Optional[str] = "auto"
 
 
 class ContextUpdateRequest(BaseModel):
@@ -377,11 +379,19 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             history_messages = []
         else:
             history_messages = existing.get("messages", [])
-            if req.context is not None and req.context != existing.get("context", ""):
-                await update_conversation_context(conv_id, req.context)
-                active_context = req.context
+            saved_ctx = existing.get("context", "")
+            # Preserve background context: never overwrite with blank text
+            if req.context and req.context.strip():
+                if req.context.strip() != saved_ctx.strip():
+                    await update_conversation_context(conv_id, req.context.strip())
+                active_context = req.context.strip()
             else:
-                active_context = existing.get("context", "")
+                active_context = saved_ctx
+
+            # Update conversation active model if it changed and not in pure image mode
+            if req.model and not req.model.startswith("sd:") and req.model != existing.get("model"):
+                await update_conversation_model(conv_id, req.model)
+
             if len(history_messages) == 0 and existing.get("title") in ("New Studio Session", "Studio Session", "New Chat"):
                 await update_conversation_title(conv_id, req.prompt.strip()[:46])
 
@@ -404,6 +414,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             offline_mode=settings.get("air_gap_mode", True),
             chat_context=active_context,
             gaming_mode=settings.get("gaming_mode", False),
+            image_style=req.image_style or "auto",
         ):
             if await request.is_disconnected():
                 await flush_ollama_vram()

@@ -52,6 +52,8 @@ export default function App() {
 
   // Default to conversational model (llama3.2:3b) rather than a coding model
   const [selectedModel, setSelectedModel] = useState('llama3.2:3b')
+  const [imageGenMode, setImageGenMode] = useState(false)
+  const [imageGenStyle, setImageGenStyle] = useState('auto')
   const [promptInput, setPromptInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamStatus, setStreamStatus] = useState('')
@@ -380,7 +382,8 @@ export default function App() {
           conversation_id: activeConvId,
           prompt: text,
           model: selectedModel,
-          mode: 'agent',
+          mode: imageGenMode ? 'image' : 'agent',
+          image_style: imageGenStyle,
           context: chatContext,
         }),
       })
@@ -956,7 +959,11 @@ export default function App() {
                       handleSendPrompt()
                     }
                   }}
-                  placeholder="Ask a question, or ask to generate an image, Excel sheet, PDF, or app..."
+                  placeholder={
+                    imageGenMode
+                      ? "Describe the image you want to render (e.g. cozy cabin in misty mountains at dusk, 35mm photography)..."
+                      : "Ask a question, or ask to generate an image, Excel sheet, PDF, or app..."
+                  }
                   className="w-full bg-transparent text-sm text-slate-100 placeholder-slate-500 resize-none focus:outline-none px-1.5 py-0.5"
                 />
 
@@ -978,6 +985,43 @@ export default function App() {
                       </select>
                       <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
+
+                    {/* Dedicated Direct Image Gen Mode Button */}
+                    <button
+                      type="button"
+                      onClick={() => setImageGenMode((v) => !v)}
+                      className={`h-8 px-2.5 rounded-lg border text-[11px] sm:text-xs font-medium flex items-center gap-1.5 shrink-0 transition ${
+                        imageGenMode
+                          ? 'border-purple-500/60 bg-purple-500/20 text-purple-200 shadow-sm shadow-purple-500/20'
+                          : 'border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-slate-300'
+                      }`}
+                      title={
+                        imageGenMode
+                          ? 'Image Mode active: Prompts render directly on GPU with zero LLM restrictions. Click to return to chat.'
+                          : 'Turn on Image Mode to render images directly with local diffusion'
+                      }
+                    >
+                      <ImageIcon className={`w-3.5 h-3.5 ${imageGenMode ? 'text-purple-400' : 'text-[#D97757]'}`} />
+                      <span>{imageGenMode ? 'Image Mode: ON' : 'Image Gen'}</span>
+                    </button>
+
+                    {/* Image Engine / Style Picker (Visible when Image Gen Mode is Active) */}
+                    {imageGenMode && (
+                      <div className="relative shrink-0">
+                        <select
+                          aria-label="Choose Image Engine Style"
+                          value={imageGenStyle}
+                          onChange={(e) => setImageGenStyle(e.target.value)}
+                          className="h-8 pl-2 pr-6 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-[11px] sm:text-xs font-medium text-purple-200 appearance-none cursor-pointer transition"
+                        >
+                          <option value="auto">🎯 Auto (Smart Style)</option>
+                          <option value="photorealistic">📸 CyberRealistic (Photo)</option>
+                          <option value="anime">🌸 MeinaMix (Anime)</option>
+                          <option value="artistic">🎨 DreamShaper (Art)</option>
+                        </select>
+                        <ChevronDown className="w-3 h-3 text-purple-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
+                    )}
 
                     <button
                       type="button"
@@ -1028,10 +1072,23 @@ export default function App() {
                     <button
                       type="submit"
                       disabled={!promptInput.trim()}
-                      className="h-8 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition"
+                      className={`h-8 px-3.5 rounded-lg text-white font-medium text-xs flex items-center gap-1.5 shrink-0 transition disabled:opacity-40 ${
+                        imageGenMode
+                          ? 'bg-purple-600 hover:bg-purple-500 text-white shadow-sm shadow-purple-600/30'
+                          : 'bg-[#D97757] hover:bg-[#E4886A]'
+                      }`}
                     >
-                      <span>Send</span>
-                      <Send className="w-3 h-3" />
+                      {imageGenMode ? (
+                        <>
+                          <span>Render</span>
+                          <Sparkles className="w-3 h-3 text-purple-200" />
+                        </>
+                      ) : (
+                        <>
+                          <span>Send</span>
+                          <Send className="w-3 h-3" />
+                        </>
+                      )}
                     </button>
                   )}
                 </div>

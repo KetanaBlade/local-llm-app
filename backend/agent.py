@@ -370,7 +370,56 @@ async def run_agent_stream(
     offline_mode: bool = True,
     chat_context: str = "",
     gaming_mode: bool = False,
+    image_style: str = "auto",
 ) -> AsyncGenerator[Dict[str, Any], None]:
+    # Direct Image Generation Mode: 100% bypass of LLM parsing & zero corporate moralizing
+    if mode == "image" or model.startswith("sd:"):
+        selected_style = image_style
+        if model.startswith("sd:"):
+            selected_style = model[3:]
+
+        model_path, resolved_style, _, _, engine_label = resolve_sd_model_and_prompts(
+            prompt=user_prompt,
+            requested_style=selected_style,
+        )
+        yield {"type": "status", "message": f"Rendering on local GPU using {engine_label.split('(')[0].strip()}..."}
+        trace_id = f"tc_{int(time.time() * 1000)}_direct"
+        fn_args = {"prompt": user_prompt, "media_type": "image", "style": selected_style}
+        trace_entry = {
+            "id": trace_id,
+            "name": "generate_visual_media",
+            "arguments": fn_args,
+            "status": "running",
+            "engine_label": engine_label,
+            "summary": f"Rendering {resolved_style} image using {engine_label.split('(')[0].strip()}",
+        }
+        yield {"type": "tool_start", "tool": trace_entry}
+        exec_res = await execute_tool_call(
+            func_name="generate_visual_media",
+            args=fn_args,
+            conversation_id=conversation_id,
+            active_model="",
+            vram_handoff=True,
+            offline_mode=offline_mode,
+        )
+        trace_entry["status"] = exec_res.get("status", "success")
+        trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
+        trace_entry["summary"] = exec_res.get("summary", "Generated visual media")
+        direct_arts = []
+        if exec_res.get("artifact"):
+            direct_arts.append(exec_res["artifact"])
+        yield {"type": "tool_end", "tool": trace_entry, "artifacts": direct_arts}
+
+        yield {
+            "type": "done",
+            "content": f"Rendered image via local **{engine_label.split('(')[0].strip()}** on your local GPU.",
+            "thinking": "",
+            "tool_calls": [trace_entry],
+            "artifacts": direct_arts,
+            "tokens_per_sec": 0.0,
+        }
+        return
+
     await ensure_ollama_running()
     # Ensure no other model is simultaneously hogging VRAM alongside `model`
     await flush_ollama_vram(except_model=model)

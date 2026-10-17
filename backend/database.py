@@ -170,6 +170,15 @@ async def update_conversation_context(conversation_id: str, context: str) -> Non
         await db.commit()
 
 
+async def update_conversation_model(conversation_id: str, model: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE conversations SET model = ?, updated_at = ? WHERE id = ?",
+            (model, time.time(), conversation_id),
+        )
+        await db.commit()
+
+
 async def list_conversations() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
