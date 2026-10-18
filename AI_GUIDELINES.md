@@ -23,7 +23,7 @@ This document establishes the core architectural, accessibility, privacy, and en
 - **One-Command Portability:** Moving the project between PCs must require zero manual config edits.
 
 ## 4. Strict Privacy & Air-Gap Architecture
-- **100% Local Data Residency:** Prompts, chat history, uploaded files, and generated artifacts are stored exclusively in local storage (`SQLite` and local `workspace/` directory).
+- **100% Local Data Residency:** Prompts, chat history, uploaded files, and generated artifacts are stored exclusively in local storage (`SQLite` and local `projects/` directory).
 - **Zero External Telemetry:** No third-party analytics, external tracking scripts, or cloud font CDNs that leak IP metadata when Air-Gap Mode is enabled.
 - **Enforced Air-Gap Switch:** When **Strict Air-Gap Mode** is active (default), the backend blocks any outbound internet tool requests and restricts network communication strictly to `127.0.0.1` and local LAN subnets (`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`).
 
@@ -33,4 +33,4 @@ This document establishes the core architectural, accessibility, privacy, and en
 
 ## 6. Git Hygiene & Atomic Commits
 - **Atomic Commits:** Group logically related changes into clear, self-contained commits using conventional commit prefixes (`feat:`, `fix:`, `docs:`, `chore:`).
-- **Clean Repository:** Never commit virtual environments (`.venv/`), `node_modules/`, SQLite databases (`*.db`), or user-generated artifacts (`workspace/artifacts/`).
+- **Clean Repository:** Never commit virtual environments (`.venv/`), `node_modules/`, SQLite databases (`*.db`), or user-generated artifacts (`projects/artifacts/` or `projects/uploads/`).

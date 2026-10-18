@@ -41,17 +41,19 @@ from openpyxl.utils import get_column_letter
 from .database import register_artifact
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-WORKSPACE_DIR = ROOT_DIR / "workspace"
-ARTIFACTS_DIR = WORKSPACE_DIR / "artifacts"
-PROJECTS_DIR = WORKSPACE_DIR / "projects"
+PROJECTS_DIR = ROOT_DIR / "projects"
+ARTIFACTS_DIR = PROJECTS_DIR / "artifacts"
+UPLOADS_DIR = PROJECTS_DIR / "uploads"
+WORKSPACE_DIR = PROJECTS_DIR  # Legacy alias for backwards compatibility
 SD_CLI_PATH = ROOT_DIR / "bin" / "sd" / ("sd-cli.exe" if platform.system() == "Windows" else "sd-cli")
 SD_MODEL_DIR = ROOT_DIR / "models" / "image"
 
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def confine_to_workspace(candidate: Path | str, base_dir: Path = WORKSPACE_DIR) -> Path:
+def confine_to_project(candidate: Path | str, base_dir: Path = PROJECTS_DIR) -> Path:
     """
     Strict Path Confinement Boundary (inspired by Odysseus).
     - Blocks NUL bytes, newlines, and illegal escape characters.
@@ -74,9 +76,12 @@ def confine_to_workspace(candidate: Path | str, base_dir: Path = WORKSPACE_DIR) 
         if common != base_real:
             raise ValueError(f"Path escape attempt blocked: '{cand_real}' is outside allowed '{base_real}'")
     except Exception as exc:
-        raise ValueError(f"Access denied: path is outside allowed workspace ({base_real}): {exc}")
+        raise ValueError(f"Access denied: path is outside allowed project ({base_real}): {exc}")
 
     return cand_real
+
+
+confine_to_workspace = confine_to_project
 
 
 RESTRICTED_SYSTEM_DIRS = [
@@ -93,23 +98,27 @@ RESTRICTED_SYSTEM_DIRS = [
 
 def resolve_safe_path(
     candidate: Path | str,
-    allow_outside_workspace: bool = True,
+    allow_outside_project: bool = True,
     base_dir: Optional[Path] = None,
+    allow_outside_workspace: Optional[bool] = None,
 ) -> Path:
     """
     Resolve and validate file/directory path.
     - Resolves user home `~`
     - Blocks NUL bytes, newlines, and illegal escape control characters
-    - If allow_outside_workspace is False, confines strictly to base_dir (defaults to WORKSPACE_DIR)
-    - If allow_outside_workspace is True, allows user documents, projects, and drives while blocking Windows system directories
+    - If allow_outside_project is False, confines strictly to base_dir (defaults to PROJECTS_DIR)
+    - If allow_outside_project is True, allows user documents, projects, and drives while blocking Windows system directories
     """
+    if allow_outside_workspace is not None:
+        allow_outside_project = allow_outside_workspace
+
     raw_str = str(candidate).strip()
     if not raw_str:
         raise ValueError("Path cannot be empty")
     if "\0" in raw_str or "\n" in raw_str or "\r" in raw_str:
         raise ValueError("Invalid path: illegal control characters detected")
 
-    active_base = (base_dir or WORKSPACE_DIR).resolve()
+    active_base = (base_dir or PROJECTS_DIR).resolve()
 
     if raw_str.startswith("~"):
         p = Path(raw_str).expanduser()
@@ -121,11 +130,11 @@ def resolve_safe_path(
     else:
         p = p.resolve()
 
-    if not allow_outside_workspace:
+    if not allow_outside_project:
         try:
             common = Path(os.path.commonpath([str(active_base), str(p)])).resolve()
             if common != active_base:
-                raise ValueError(f"Path escape blocked: '{p}' is outside allowed workspace '{active_base}'")
+                raise ValueError(f"Path escape blocked: '{p}' is outside allowed project '{active_base}'")
         except Exception as exc:
             raise ValueError(f"Access denied: {exc}")
 
@@ -707,7 +716,7 @@ async def tool_create_excel_spreadsheet(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.xlsx"
-    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+    filepath = confine_to_project(ARTIFACTS_DIR / filename)
 
     wb = openpyxl.Workbook()
     default_ws = wb.active
@@ -830,7 +839,7 @@ async def tool_create_document(
         fmt = "pdf"
 
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.{fmt}"
-    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+    filepath = confine_to_project(ARTIFACTS_DIR / filename)
 
     markdown_preview_lines = [f"# {title}\n"]
     for sec in sections:
@@ -944,7 +953,7 @@ async def tool_build_interactive_app(
     conversation_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     filename = f"{_slugify(title)}_{int(time.time()) % 10000}.html"
-    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+    filepath = confine_to_project(ARTIFACTS_DIR / filename)
     filepath.write_text(html_code, encoding="utf-8")
 
     artifact = await register_artifact(
@@ -1010,7 +1019,7 @@ async def tool_generate_visual_media(
         import matplotlib.pyplot as plt
 
         filename = f"chart_{slug}_{int(time.time()) % 10000}.png"
-        filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+        filepath = confine_to_project(ARTIFACTS_DIR / filename)
 
         fig, ax = plt.subplots(figsize=(10, 5.8), dpi=160)
         fig.patch.set_facecolor("#0F1115")
@@ -1067,7 +1076,7 @@ async def tool_generate_visual_media(
     if not is_video and SD_CLI_PATH.exists() and model_path and model_path.exists():
         await _evict_ollama_vram_if_needed(active_model, vram_handoff)
         filename = f"img_{resolved_style}_{slug}_{int(time.time()) % 10000}.png"
-        filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+        filepath = confine_to_project(ARTIFACTS_DIR / filename)
         seed = random.randint(1, 999999999)
 
         models_cat = list_available_sd_models()
@@ -1134,7 +1143,7 @@ async def tool_generate_visual_media(
 
     # 3. Animated Motion Clip
     filename = f"motion_{slug}_{int(time.time()) % 10000}.gif"
-    filepath = confine_to_workspace(ARTIFACTS_DIR / filename)
+    filepath = confine_to_project(ARTIFACTS_DIR / filename)
     frames = []
     width, height = 640, 380
     for f_idx in range(24):
@@ -1184,6 +1193,7 @@ async def tool_execute_python(
     description: str = "Execute Python script",
     target_filepath: Optional[str] = None,
     conversation_id: Optional[str] = None,
+    base_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Antigravity-Style Universal Python Execution Primitive.
@@ -1195,7 +1205,7 @@ async def tool_execute_python(
     target_path = None
     if target_filepath and str(target_filepath).strip():
         try:
-            target_path = resolve_safe_path(target_filepath, allow_outside_workspace=True)
+            target_path = resolve_safe_path(target_filepath, allow_outside_project=True, base_dir=base_dir)
             if target_path.exists() and target_path.is_file():
                 bak_path = create_file_backup(target_path)
         except Exception:
@@ -1205,7 +1215,7 @@ async def tool_execute_python(
     script_file = ARTIFACTS_DIR / f"_orchestrator_exec_{int(time.time() * 1000)}.py"
     script_file.write_text(script, encoding="utf-8")
 
-    cwd_dir = target_path.parent if (target_path and target_path.parent.exists()) else WORKSPACE_DIR
+    cwd_dir = target_path.parent if (target_path and target_path.parent.exists()) else (base_dir or PROJECTS_DIR)
 
     start_t = time.time()
     try:
@@ -1307,6 +1317,7 @@ async def tool_read_file(
     filepath: str,
     start_line: int = 1,
     max_lines: int = 250,
+    base_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Antigravity-Style Universal File Reader.
@@ -1315,7 +1326,7 @@ async def tool_read_file(
     - Formats CSV files into structured table previews.
     """
     try:
-        target = resolve_safe_path(filepath, allow_outside_workspace=True)
+        target = resolve_safe_path(filepath, allow_outside_project=True, base_dir=base_dir)
     except Exception as exc:
         return {"status": "error", "summary": str(exc), "content": ""}
 
@@ -1427,13 +1438,14 @@ async def tool_read_file(
 async def tool_list_directory(
     directory_path: str = ".",
     max_entries: int = 100,
+    base_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Antigravity-Style Directory Explorer.
     Lists files, directories, sizes, and file types inside any allowed local folder.
     """
     try:
-        target = resolve_safe_path(directory_path, allow_outside_workspace=True)
+        target = resolve_safe_path(directory_path, allow_outside_project=True, base_dir=base_dir)
     except Exception as exc:
         return {"status": "error", "summary": str(exc), "entries": []}
 
@@ -1490,7 +1502,7 @@ async def tool_edit_file_content(
     Calculates unified diff lines for interactive user preview and 1-click backup rollback.
     """
     try:
-        target = resolve_safe_path(filepath, allow_outside_workspace=True, base_dir=base_dir)
+        target = resolve_safe_path(filepath, allow_outside_project=True, base_dir=base_dir)
     except Exception as exc:
         return {"status": "error", "summary": str(exc)}
 
@@ -1541,7 +1553,7 @@ def tool_revert_file_backup(backup_filepath: str, base_dir: Optional[Path] = Non
     Restores an edited file from its .bak_* backup.
     """
     try:
-        bak_target = resolve_safe_path(backup_filepath, allow_outside_workspace=True, base_dir=base_dir)
+        bak_target = resolve_safe_path(backup_filepath, allow_outside_project=True, base_dir=base_dir)
         if not bak_target.exists() or not bak_target.is_file():
             return {"status": "error", "summary": f"Backup file not found: '{backup_filepath}'"}
 
@@ -1571,7 +1583,7 @@ async def tool_run_shell_command(
 ) -> Dict[str, Any]:
     """
     Antigravity/Cursor-Style Shell & Terminal Command Runner.
-    Runs commands in the active workspace directory.
+    Runs commands in the active project directory.
     Guards against destructive system commands.
     """
     clean_cmd = command.strip()
@@ -1597,10 +1609,10 @@ async def tool_run_shell_command(
                 "stderr": "Command blocked for system safety.",
             }
 
-    resolved_cwd = (base_dir or WORKSPACE_DIR).resolve()
+    resolved_cwd = (base_dir or PROJECTS_DIR).resolve()
     if cwd and cwd.strip():
         try:
-            target_cwd = resolve_safe_path(cwd, allow_outside_workspace=True, base_dir=base_dir)
+            target_cwd = resolve_safe_path(cwd, allow_outside_project=True, base_dir=base_dir)
             if target_cwd.exists() and target_cwd.is_dir():
                 resolved_cwd = target_cwd
         except Exception:
@@ -1718,7 +1730,7 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                 "name": "run_shell_command",
                 "description": (
                     "Execute a terminal shell command (PowerShell on Windows, Bash on Linux/Mac) "
-                    "in the active workspace directory. Use to run tests, build tools, inspect git status, "
+                    "in the active project directory. Use to run tests, build tools, inspect git status, "
                     "compile code, or run CLI utilities."
                 ),
                 "parameters": {
@@ -1730,7 +1742,7 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                         },
                         "cwd": {
                             "type": "string",
-                            "description": "Optional subdirectory or working folder path (defaults to active workspace).",
+                            "description": "Optional subdirectory or working folder path (defaults to active project).",
                         },
                     },
                     "required": ["command"],
@@ -1804,7 +1816,7 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                     "properties": {
                         "directory_path": {
                             "type": "string",
-                            "description": "Path of the directory to list (defaults to current workspace).",
+                            "description": "Path of the directory to list (defaults to current project).",
                         },
                         "max_entries": {
                             "type": "integer",

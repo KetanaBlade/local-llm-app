@@ -26,11 +26,13 @@ import aiosqlite
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "local_ai_studio.db"
-WORKSPACE_DIR = ROOT_DIR / "workspace"
-ARTIFACTS_DIR = WORKSPACE_DIR / "artifacts"
-PROJECTS_DIR = WORKSPACE_DIR / "projects"
-ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECTS_DIR = ROOT_DIR / "projects"
+ARTIFACTS_DIR = PROJECTS_DIR / "artifacts"
+UPLOADS_DIR = PROJECTS_DIR / "uploads"
+WORKSPACE_DIR = PROJECTS_DIR  # Legacy alias for backwards compatibility
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_TOOL_PERMISSIONS: Dict[str, str] = {
     "read_file": "allow",
@@ -61,7 +63,7 @@ async def init_db() -> None:
         )
         await db.execute(
             """
-            CREATE TABLE IF NOT EXISTS workspaces (
+            CREATE TABLE IF NOT EXISTS projects (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
@@ -74,25 +76,61 @@ async def init_db() -> None:
         )
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                instructions TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        # Migrate workspaces into projects table if any exist
+        try:
+            await db.execute(
+                """
+                INSERT OR IGNORE INTO projects (id, name, path, is_external, instructions, created_at, updated_at)
+                SELECT id, name, path, is_external, instructions, created_at, updated_at FROM workspaces
+                """
+            )
+            await db.commit()
+        except Exception:
+            pass
+
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'chat',
                 context TEXT NOT NULL DEFAULT '',
+                project_id TEXT DEFAULT NULL,
                 workspace_id TEXT DEFAULT NULL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
             """
         )
-        # Ensure `context` and `workspace_id` columns exist on older databases
+        # Ensure `context`, `project_id`, and `workspace_id` columns exist on older databases
         try:
             await db.execute("ALTER TABLE conversations ADD COLUMN context TEXT NOT NULL DEFAULT ''")
         except Exception:
             pass
         try:
+            await db.execute("ALTER TABLE conversations ADD COLUMN project_id TEXT DEFAULT NULL")
+        except Exception:
+            pass
+        try:
             await db.execute("ALTER TABLE conversations ADD COLUMN workspace_id TEXT DEFAULT NULL")
+        except Exception:
+            pass
+        try:
+            await db.execute("UPDATE conversations SET project_id = workspace_id WHERE project_id IS NULL AND workspace_id IS NOT NULL")
+            await db.execute("UPDATE conversations SET workspace_id = project_id WHERE workspace_id IS NULL AND project_id IS NOT NULL")
+            await db.commit()
         except Exception:
             pass
 
@@ -118,6 +156,7 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS artifacts (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT,
+                project_id TEXT DEFAULT NULL,
                 workspace_id TEXT DEFAULT NULL,
                 title TEXT NOT NULL,
                 filename TEXT NOT NULL,
@@ -130,7 +169,17 @@ async def init_db() -> None:
             """
         )
         try:
+            await db.execute("ALTER TABLE artifacts ADD COLUMN project_id TEXT DEFAULT NULL")
+        except Exception:
+            pass
+        try:
             await db.execute("ALTER TABLE artifacts ADD COLUMN workspace_id TEXT DEFAULT NULL")
+        except Exception:
+            pass
+        try:
+            await db.execute("UPDATE artifacts SET project_id = workspace_id WHERE project_id IS NULL AND workspace_id IS NOT NULL")
+            await db.execute("UPDATE artifacts SET workspace_id = project_id WHERE workspace_id IS NULL AND project_id IS NOT NULL")
+            await db.commit()
         except Exception:
             pass
 
@@ -195,26 +244,29 @@ async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     return await get_settings()
 
 
-def _slugify_workspace_name(name: str) -> str:
+def _slugify_project_name(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower()).strip("_")
     return s[:40] or f"project_{int(time.time())}"
 
 
-async def create_workspace(
+_slugify_workspace_name = _slugify_project_name
+
+
+async def create_project(
     name: str,
     path: Optional[str] = None,
     is_external: bool = False,
     instructions: str = "",
 ) -> Dict[str, Any]:
-    wid = str(uuid.uuid4())
+    pid = str(uuid.uuid4())
     now = time.time()
-    clean_name = name.strip() or "Untitled Workspace"
+    clean_name = name.strip() or "Untitled Project"
 
     if path and path.strip():
         resolved_path = str(Path(path.strip()).resolve())
         is_ext = 1 if is_external else 0
     else:
-        slug = _slugify_workspace_name(clean_name)
+        slug = _slugify_project_name(clean_name)
         folder = PROJECTS_DIR / slug
         folder.mkdir(parents=True, exist_ok=True)
         resolved_path = str(folder.resolve())
@@ -223,15 +275,26 @@ async def create_workspace(
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO workspaces (id, name, path, is_external, instructions, created_at, updated_at)
+            INSERT INTO projects (id, name, path, is_external, instructions, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (wid, clean_name, resolved_path, is_ext, instructions.strip(), now, now),
+            (pid, clean_name, resolved_path, is_ext, instructions.strip(), now, now),
         )
+        # Mirror to workspaces table for legacy backward-compatibility
+        try:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO workspaces (id, name, path, is_external, instructions, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (pid, clean_name, resolved_path, is_ext, instructions.strip(), now, now),
+            )
+        except Exception:
+            pass
         await db.commit()
 
     return {
-        "id": wid,
+        "id": pid,
         "name": clean_name,
         "path": resolved_path,
         "is_external": bool(is_ext),
@@ -241,36 +304,49 @@ async def create_workspace(
     }
 
 
-async def list_workspaces() -> List[Dict[str, Any]]:
+create_workspace = create_project
+
+
+async def list_projects() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             """
-            SELECT w.id, w.name, w.path, w.is_external, w.instructions, w.created_at, w.updated_at,
+            SELECT p.id, p.name, p.path, p.is_external, p.instructions, p.created_at, p.updated_at,
                    COUNT(c.id) as conversation_count
-            FROM workspaces w
-            LEFT JOIN conversations c ON w.id = c.workspace_id
-            GROUP BY w.id
-            ORDER BY w.updated_at DESC
+            FROM projects p
+            LEFT JOIN conversations c ON (p.id = c.project_id OR p.id = c.workspace_id)
+            GROUP BY p.id
+            ORDER BY p.updated_at DESC
             """
         )
         rows = await cursor.fetchall()
-        workspaces = []
+        projects = []
         for r in rows:
             d = dict(r)
             d["is_external"] = bool(d["is_external"])
-            workspaces.append(d)
-        return workspaces
+            projects.append(d)
+        return projects
 
 
-async def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
+list_workspaces = list_projects
+
+
+async def get_project(project_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, name, path, is_external, instructions, created_at, updated_at FROM workspaces WHERE id = ?",
-            (workspace_id,),
+            "SELECT id, name, path, is_external, instructions, created_at, updated_at FROM projects WHERE id = ?",
+            (project_id,),
         )
         row = await cursor.fetchone()
+        if not row:
+            # Fallback to workspaces table if not yet mirrored
+            cursor2 = await db.execute(
+                "SELECT id, name, path, is_external, instructions, created_at, updated_at FROM workspaces WHERE id = ?",
+                (project_id,),
+            )
+            row = await cursor2.fetchone()
         if not row:
             return None
         d = dict(row)
@@ -278,36 +354,53 @@ async def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
         return d
 
 
-async def update_workspace(workspace_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    ws = await get_workspace(workspace_id)
-    if not ws:
+get_workspace = get_project
+
+
+async def update_project(project_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    prj = await get_project(project_id)
+    if not prj:
         return None
     now = time.time()
-    name = updates.get("name", ws["name"])
-    path = updates.get("path", ws["path"])
-    instructions = updates.get("instructions", ws["instructions"])
-    is_external = 1 if updates.get("is_external", ws["is_external"]) else 0
+    name = updates.get("name", prj["name"])
+    path = updates.get("path", prj["path"])
+    instructions = updates.get("instructions", prj["instructions"])
+    is_external = 1 if updates.get("is_external", prj["is_external"]) else 0
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
-            UPDATE workspaces
+            UPDATE projects
             SET name = ?, path = ?, is_external = ?, instructions = ?, updated_at = ?
             WHERE id = ?
             """,
-            (name, path, is_external, instructions, now, workspace_id),
+            (name, path, is_external, instructions, now, project_id),
         )
+        try:
+            await db.execute(
+                """
+                UPDATE workspaces
+                SET name = ?, path = ?, is_external = ?, instructions = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (name, path, is_external, instructions, now, project_id),
+            )
+        except Exception:
+            pass
         await db.commit()
-    return await get_workspace(workspace_id)
+    return await get_project(project_id)
 
 
-async def delete_workspace(workspace_id: str, delete_files: bool = False) -> Dict[str, Any]:
-    ws = await get_workspace(workspace_id)
-    if not ws:
-        return {"status": "not_found", "id": workspace_id}
+update_workspace = update_project
 
-    if delete_files and not ws["is_external"]:
-        p = Path(ws["path"])
+
+async def delete_project(project_id: str, delete_files: bool = False) -> Dict[str, Any]:
+    prj = await get_project(project_id)
+    if not prj:
+        return {"status": "not_found", "id": project_id}
+
+    if delete_files and not prj["is_external"]:
+        p = Path(prj["path"])
         if PROJECTS_DIR.resolve() in p.resolve().parents and p.exists() and p.is_dir():
             try:
                 import shutil
@@ -317,17 +410,24 @@ async def delete_workspace(workspace_id: str, delete_files: bool = False) -> Dic
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE conversations SET workspace_id = NULL WHERE workspace_id = ?",
-            (workspace_id,),
+            "UPDATE conversations SET project_id = NULL, workspace_id = NULL WHERE project_id = ? OR workspace_id = ?",
+            (project_id, project_id),
         )
         await db.execute(
-            "UPDATE artifacts SET workspace_id = NULL WHERE workspace_id = ?",
-            (workspace_id,),
+            "UPDATE artifacts SET project_id = NULL, workspace_id = NULL WHERE project_id = ? OR workspace_id = ?",
+            (project_id, project_id),
         )
-        await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        await db.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        try:
+            await db.execute("DELETE FROM workspaces WHERE id = ?", (project_id,))
+        except Exception:
+            pass
         await db.commit()
 
-    return {"status": "deleted", "id": workspace_id}
+    return {"status": "deleted", "id": project_id}
+
+
+delete_workspace = delete_project
 
 
 async def create_conversation(
@@ -335,14 +435,20 @@ async def create_conversation(
     model: str,
     mode: str = "chat",
     context: str = "",
+    project_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cid = str(uuid.uuid4())
     now = time.time()
+    eff_pid = project_id or workspace_id
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO conversations (id, title, model, mode, context, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (cid, title, model, mode, context, workspace_id, now, now),
+            """
+            INSERT INTO conversations
+            (id, title, model, mode, context, project_id, workspace_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (cid, title, model, mode, context, eff_pid, eff_pid, now, now),
         )
         await db.commit()
     return {
@@ -351,7 +457,8 @@ async def create_conversation(
         "model": model,
         "mode": mode,
         "context": context,
-        "workspace_id": workspace_id,
+        "project_id": eff_pid,
+        "workspace_id": eff_pid,
         "created_at": now,
         "updated_at": now,
     }
@@ -379,17 +486,24 @@ async def list_conversations() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, context, workspace_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
+            "SELECT id, title, model, mode, context, project_id, workspace_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
         )
         rows = await cursor.fetchall()
-        return [dict(r) for r in rows]
+        convs = []
+        for r in rows:
+            d = dict(r)
+            pid = d.get("project_id") or d.get("workspace_id")
+            d["project_id"] = pid
+            d["workspace_id"] = pid
+            convs.append(d)
+        return convs
 
 
 async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, context, workspace_id, created_at, updated_at FROM conversations WHERE id = ?",
+            "SELECT id, title, model, mode, context, project_id, workspace_id, created_at, updated_at FROM conversations WHERE id = ?",
             (conversation_id,),
         )
         conv = await cursor.fetchone()
@@ -427,6 +541,9 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
             d["artifacts"] = valid_arts
             messages.append(d)
         res = dict(conv)
+        pid = res.get("project_id") or res.get("workspace_id")
+        res["project_id"] = pid
+        res["workspace_id"] = pid
         res["messages"] = messages
         return res
 
@@ -642,23 +759,28 @@ async def register_artifact(
     size_bytes: int,
     preview_data: Optional[Dict[str, Any]] = None,
     conversation_id: Optional[str] = None,
+    project_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     aid = str(uuid.uuid4())
     now = time.time()
     prev_json = json.dumps(preview_data or {})
+    eff_pid = project_id or workspace_id
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             INSERT INTO artifacts
-            (id, conversation_id, title, filename, category, mime_type, size_bytes, preview_data, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, conversation_id, project_id, workspace_id, title, filename, category, mime_type, size_bytes, preview_data, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (aid, conversation_id, title, filename, category, mime_type, size_bytes, prev_json, now),
+            (aid, conversation_id, eff_pid, eff_pid, title, filename, category, mime_type, size_bytes, prev_json, now),
         )
         await db.commit()
     return {
         "id": aid,
         "conversation_id": conversation_id,
+        "project_id": eff_pid,
+        "workspace_id": eff_pid,
         "title": title,
         "filename": filename,
         "url": f"/api/artifacts/file/{filename}",
@@ -692,6 +814,9 @@ async def list_artifacts() -> List[Dict[str, Any]]:
                 dead_ids.append(d["id"])
                 continue
 
+            pid = d.get("project_id") or d.get("workspace_id")
+            d["project_id"] = pid
+            d["workspace_id"] = pid
             d["url"] = f"/api/artifacts/file/{d['filename']}"
             d["preview_data"] = json.loads(d.get("preview_data") or "{}")
             items.append(d)
@@ -740,6 +865,8 @@ async def list_artifacts() -> List[Dict[str, Any]]:
             newly_indexed.append({
                 "id": aid,
                 "conversation_id": None,
+                "project_id": None,
+                "workspace_id": None,
                 "title": raw_name,
                 "filename": raw_name,
                 "url": f"/api/artifacts/file/{raw_name}",

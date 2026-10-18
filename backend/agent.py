@@ -43,6 +43,7 @@ from .tools import (
     tool_run_python_sandbox,
     tool_run_shell_command,
     tool_search_web,
+    PROJECTS_DIR,
     WORKSPACE_DIR,
 )
 
@@ -399,6 +400,7 @@ def check_tool_permission(
     tool_args: Dict[str, Any],
     permission_mode: str,
     tool_permissions: Optional[Dict[str, str]] = None,
+    project_dir: Optional[Path] = None,
     workspace_dir: Optional[Path] = None,
     external_path_policy: str = "ask",
 ) -> str:
@@ -409,6 +411,7 @@ def check_tool_permission(
     """
     mode = (permission_mode or "ask").lower()
     perms = tool_permissions or {}
+    effective_dir = project_dir or workspace_dir
 
     # 1. Plan Only / Read-Only Mode
     if mode == "plan":
@@ -429,13 +432,13 @@ def check_tool_permission(
         return "deny"
 
     # 3. Check External Path Boundary Guard
-    if external_path_policy == "ask" and workspace_dir:
+    if external_path_policy == "ask" and effective_dir:
         cand_path_str = tool_args.get("filepath") or tool_args.get("target_filepath") or tool_args.get("directory_path")
         if cand_path_str:
             try:
                 cand_p = Path(cand_path_str)
                 if cand_p.is_absolute():
-                    ws_real = workspace_dir.resolve()
+                    ws_real = effective_dir.resolve()
                     cand_real = cand_p.resolve()
                     try:
                         common = Path(os.path.commonpath([str(ws_real), str(cand_real)])).resolve()
@@ -596,27 +599,31 @@ async def run_agent_stream(
     permission_mode: str = "ask",
     tool_permissions: Optional[Dict[str, str]] = None,
     external_path_policy: str = "ask",
+    project_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    # Resolve active workspace directory and instructions
-    active_workspace_dir = WORKSPACE_DIR
-    active_workspace_name = ""
-    active_workspace_instructions = ""
+    # Resolve active project directory and instructions
+    effective_project_id = project_id or workspace_id
+    active_project_dir = PROJECTS_DIR
+    active_project_name = ""
+    active_project_instructions = ""
 
-    if workspace_id:
-        from .database import get_workspace
-        ws_record = await get_workspace(workspace_id)
-        if ws_record:
-            active_workspace_name = ws_record.get("name", "")
-            active_workspace_instructions = ws_record.get("instructions", "")
-            raw_ws_path = ws_record.get("path")
-            if raw_ws_path:
+    if effective_project_id:
+        from .database import get_project
+        prj_record = await get_project(effective_project_id)
+        if prj_record:
+            active_project_name = prj_record.get("name", "")
+            active_project_instructions = prj_record.get("instructions", "")
+            raw_prj_path = prj_record.get("path")
+            if raw_prj_path:
                 try:
-                    p = Path(raw_ws_path).resolve()
+                    p = Path(raw_prj_path).resolve()
                     if p.exists() and p.is_dir():
-                        active_workspace_dir = p
+                        active_project_dir = p
                 except Exception:
                     pass
+
+    active_workspace_dir = active_project_dir  # Legacy alias
 
     # Direct Image Generation Mode: 100% bypass of LLM parsing & zero corporate moralizing
     if mode == "image" or model.startswith("sd:"):
@@ -708,22 +715,22 @@ async def run_agent_stream(
             "===================================================================="
         )
 
-    if active_workspace_instructions and active_workspace_instructions.strip():
+    if active_project_instructions and active_project_instructions.strip():
         sys_prompt += (
-            f"\n\n=== PROJECT / WORKSPACE GUIDELINES ({active_workspace_name or 'Active Workspace'}) ===\n"
-            f"{active_workspace_instructions.strip()}\n"
-            "========================================================================================="
+            f"\n\n=== PROJECT GUIDELINES ({active_project_name or 'Active Project'}) ===\n"
+            f"{active_project_instructions.strip()}\n"
+            "========================================================================="
         )
 
-    guidelines_file = active_workspace_dir / "AI_GUIDELINES.md"
+    guidelines_file = active_project_dir / "AI_GUIDELINES.md"
     if guidelines_file.exists() and guidelines_file.is_file():
         try:
             g_content = guidelines_file.read_text(encoding="utf-8", errors="ignore")
             if g_content.strip():
                 sys_prompt += (
-                    f"\n\n=== AI GUIDELINES DETECTED IN WORKSPACE ({guidelines_file.name}) ===\n"
+                    f"\n\n=== AI GUIDELINES DETECTED IN PROJECT ({guidelines_file.name}) ===\n"
                     f"{g_content.strip()[:4000]}\n"
-                    "========================================================================"
+                    "======================================================================="
                 )
         except Exception:
             pass
@@ -732,29 +739,29 @@ async def run_agent_stream(
         attachment_lines = []
         for af in attached_files:
             fname = af.get("filename") or af.get("title", "")
-            fpath = af.get("path") or f"workspace/artifacts/{fname}"
+            fpath = af.get("path") or f"projects/artifacts/{fname}"
             fcat = af.get("category", "file")
             attachment_lines.append(f"- `{fname}` (Category: {fcat}, Location: `{fpath}`)")
         sys_prompt += (
-            "\n\n=== ATTACHED WORKSPACE FILES FOR THIS REQUEST ===\n"
+            "\n\n=== ATTACHED PROJECT FILES FOR THIS REQUEST ===\n"
             + "\n".join(attachment_lines)
             + "\nYou can inspect and process these files directly using your tools (such as `read_file`, or `execute_python` with openpyxl/pandas).\n"
-            + "=================================================="
+            + "==============================================="
         )
 
     if mode == "agent":
         try:
-            ws_files = []
-            for item in sorted(active_workspace_dir.glob("**/*"))[:35]:
+            prj_files = []
+            for item in sorted(active_project_dir.glob("**/*"))[:35]:
                 if item.is_file() and not item.name.startswith(".") and ".bak" not in item.name and "node_modules" not in item.parts:
-                    rel_p = str(item.relative_to(active_workspace_dir)).replace("\\", "/")
+                    rel_p = str(item.relative_to(active_project_dir)).replace("\\", "/")
                     size_kb = round(item.stat().st_size / 1024, 1)
-                    ws_files.append(f"- `{rel_p}` ({size_kb} KB)")
-            if ws_files:
+                    prj_files.append(f"- `{rel_p}` ({size_kb} KB)")
+            if prj_files:
                 sys_prompt += (
-                    f"\n\n=== ACTIVE WORKSPACE FILES ({active_workspace_dir.resolve()}) ===\n"
-                    + "\n".join(ws_files)
-                    + "\nYou have direct filesystem tools (`read_file`, `edit_file_content`, `list_directory`, `run_shell_command`, `execute_python`) to inspect, edit, run, or create files in this workspace.\n"
+                    f"\n\n=== ACTIVE PROJECT FILES ({active_project_dir.resolve()}) ===\n"
+                    + "\n".join(prj_files)
+                    + "\nYou have direct filesystem tools (`read_file`, `edit_file_content`, `list_directory`, `run_shell_command`, `execute_python`) to inspect, edit, run, or create files in this project.\n"
                     + "================================================================"
                 )
         except Exception:
@@ -956,7 +963,8 @@ async def run_agent_stream(
                             tool_args=fn_args,
                             permission_mode=permission_mode,
                             tool_permissions=tool_permissions,
-                            workspace_dir=active_workspace_dir,
+                            project_dir=active_project_dir,
+                            workspace_dir=active_project_dir,
                             external_path_policy=external_path_policy,
                         )
 
@@ -989,7 +997,8 @@ async def run_agent_stream(
                                     "name": fn_name,
                                     "arguments": fn_args,
                                     "summary": trace_entry["summary"],
-                                    "workspace_dir": str(active_workspace_dir) if active_workspace_dir else None,
+                                    "project_dir": str(active_project_dir) if active_project_dir else None,
+                                    "workspace_dir": str(active_project_dir) if active_project_dir else None,
                                 },
                             }
                             await appr_event.wait()
@@ -1018,7 +1027,7 @@ async def run_agent_stream(
                             vram_handoff=vram_handoff,
                             offline_mode=offline_mode,
                             brave_api_key=brave_api_key,
-                            base_dir=active_workspace_dir,
+                            base_dir=active_project_dir,
                         )
 
                         trace_entry["status"] = exec_res.get("status", "success")

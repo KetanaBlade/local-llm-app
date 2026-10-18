@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend.tools import (
+    PROJECTS_DIR,
     WORKSPACE_DIR,
     resolve_safe_path,
     create_file_backup,
@@ -30,7 +31,7 @@ from backend.tools import (
 
 async def run_tests():
     print("=== RUNNING ORCHESTRATOR PRIMITIVES TESTS ===")
-    test_dir = WORKSPACE_DIR / "_test_orchestrator"
+    test_dir = PROJECTS_DIR / "_test_orchestrator"
     test_dir.mkdir(parents=True, exist_ok=True)
 
     try:

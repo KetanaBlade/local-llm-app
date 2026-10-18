@@ -11,14 +11,18 @@ from pathlib import Path
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend.tools import confine_to_workspace, WORKSPACE_DIR
+from backend.tools import confine_to_project, confine_to_workspace, PROJECTS_DIR, WORKSPACE_DIR
 from backend.agent import get_current_date_context, compact_conversation_history, estimate_text_tokens
 
 
-def test_confine_to_workspace():
-    # Valid relative path inside workspace
-    valid = confine_to_workspace("artifacts/report.xlsx")
-    assert valid == (WORKSPACE_DIR / "artifacts" / "report.xlsx").resolve()
+def test_confine_to_project():
+    # Valid relative path inside project
+    valid = confine_to_project("artifacts/report.xlsx")
+    assert valid == (PROJECTS_DIR / "artifacts" / "report.xlsx").resolve()
+
+    # Legacy alias test
+    legacy = confine_to_workspace("artifacts/report.xlsx")
+    assert legacy == valid
 
     # Block parent traversal attempts
     traversal_attempts = [
@@ -29,7 +33,7 @@ def test_confine_to_workspace():
     for attempt in traversal_attempts:
         blocked = False
         try:
-            confine_to_workspace(attempt)
+            confine_to_project(attempt)
         except ValueError:
             blocked = True
         assert blocked, f"Failed to block traversal attempt: {attempt}"
@@ -37,12 +41,12 @@ def test_confine_to_workspace():
     # Block NUL byte injections
     blocked_nul = False
     try:
-        confine_to_workspace("artifacts/test\0.txt")
+        confine_to_project("artifacts/test\0.txt")
     except ValueError:
         blocked_nul = True
     assert blocked_nul, "Failed to block NUL byte injection"
 
-    print("[PASS] test_confine_to_workspace")
+    print("[PASS] test_confine_to_project (and legacy confine_to_workspace)")
 
 
 def test_date_grounding():
@@ -211,7 +215,7 @@ def test_artifact_lifecycle():
 
 
 if __name__ == "__main__":
-    test_confine_to_workspace()
+    test_confine_to_project()
     test_date_grounding()
     test_context_compaction()
     test_sd_multi_model_router()

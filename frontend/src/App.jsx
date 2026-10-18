@@ -54,7 +54,7 @@ import ToolApprovalCard from './components/ToolApprovalCard'
 import DiffViewer from './components/DiffViewer'
 import AtMentionDropdown from './components/AtMentionDropdown'
 import CodeEditorPanel from './components/CodeEditorPanel'
-import WorkspaceModal from './components/WorkspaceModal'
+import ProjectModal from './components/ProjectModal'
 import SettingsModal from './components/SettingsModal'
 import ErrorBoundary from './components/ErrorBoundary'
 
@@ -96,14 +96,14 @@ export default function App() {
   const [filePanelOpen, setFilePanelOpen] = useState(false)
   const [attachedFiles, setAttachedFiles] = useState([])
   const [isUploading, setIsUploading] = useState(false)
-  const [workspaceFiles, setWorkspaceFiles] = useState([])
-  const [workspaceRoot, setWorkspaceRoot] = useState('')
-  const [workspaceTab, setWorkspaceTab] = useState('artifacts')
+  const [projectFiles, setProjectFiles] = useState([])
+  const [projectRoot, setProjectRoot] = useState('')
+  const [projectTab, setProjectTab] = useState('artifacts')
   const [viewingFile, setViewingFile] = useState(null)
   const [isDraggingOver, setIsDraggingOver] = useState(false)
   const [copiedCode, setCopiedCode] = useState(false)
   const fileInputRef = useRef(null)
-  const workspaceUploadRef = useRef(null)
+  const projectUploadRef = useRef(null)
   const [hwModalOpen, setHwModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
   const [editingMessageId, setEditingMessageId] = useState(null)
@@ -124,13 +124,13 @@ export default function App() {
   const [shutdownModalOpen, setShutdownModalOpen] = useState(false)
   const [isShutdown, setIsShutdown] = useState(false)
 
-  // Multi-Workspace state
-  const [workspaces, setWorkspaces] = useState([])
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState(null)
-  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState({})
-  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false)
-  const [workspaceModalMode, setWorkspaceModalMode] = useState('create')
-  const [editingWorkspace, setEditingWorkspace] = useState(null)
+  // Multi-Project state
+  const [projects, setProjects] = useState([])
+  const [activeProjectId, setActiveProjectId] = useState(null)
+  const [collapsedProjects, setCollapsedProjects] = useState({})
+  const [projectModalOpen, setProjectModalOpen] = useState(false)
+  const [projectModalMode, setProjectModalMode] = useState('create')
+  const [editingProject, setEditingProject] = useState(null)
 
   // Settings modal (unified 4-tab settings)
   const [settingsModalOpen, setSettingsModalOpen] = useState(false)
@@ -139,8 +139,8 @@ export default function App() {
   // Tool Approvals (Human-in-the-Loop)
   const [pendingApprovals, setPendingApprovals] = useState([])
 
-  // In-App Code Editor & Workspace Files
-  const [editingWorkspaceFile, setEditingWorkspaceFile] = useState(null)
+  // In-App Code Editor & Project Files
+  const [editingProjectFile, setEditingProjectFile] = useState(null)
   const [newFileModalOpen, setNewFileModalOpen] = useState(false)
   const [newFileName, setNewFileName] = useState('')
   const [revertingBackup, setRevertingBackup] = useState(null)
@@ -255,21 +255,21 @@ export default function App() {
     await handleFlushVram(newModel)
   }
 
-  const fetchWorkspaces = async () => {
+  const fetchProjects = async () => {
     try {
-      const r = await fetch('/api/workspaces')
+      const r = await fetch('/api/projects')
       if (r.ok) {
         const data = await r.json()
-        setWorkspaces(data.workspaces || [])
+        setProjects(data.projects || [])
       }
     } catch (e) {
-      console.error('Failed to fetch workspaces:', e)
+      console.error('Failed to fetch projects:', e)
     }
   }
 
-  const fetchConversations = async (wsId = activeWorkspaceId) => {
+  const fetchConversations = async (projId = activeProjectId) => {
     try {
-      const url = wsId ? `/api/conversations?workspace_id=${wsId}` : '/api/conversations'
+      const url = projId ? `/api/conversations?project_id=${projId}` : '/api/conversations'
       const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
@@ -280,9 +280,9 @@ export default function App() {
     }
   }
 
-  const fetchArtifacts = async (wsId = activeWorkspaceId) => {
+  const fetchArtifacts = async (projId = activeProjectId) => {
     try {
-      const url = wsId ? `/api/artifacts?workspace_id=${wsId}` : '/api/artifacts'
+      const url = projId ? `/api/artifacts?project_id=${projId}` : '/api/artifacts'
       const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
@@ -293,14 +293,14 @@ export default function App() {
     }
   }
 
-  const fetchWorkspaceFiles = async (wsId = activeWorkspaceId) => {
+  const fetchProjectFiles = async (projId = activeProjectId) => {
     try {
-      const url = wsId ? `/api/workspace/files?workspace_id=${wsId}` : '/api/workspace/files'
+      const url = projId ? `/api/project/files?project_id=${projId}` : '/api/project/files'
       const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
-        setWorkspaceFiles(data.files || [])
-        setWorkspaceRoot(data.workspace_root || '')
+        setProjectFiles(data.files || [])
+        setProjectRoot(data.project_root || data.workspace_root || '')
       }
     } catch (e) {
       console.error(e)
@@ -309,10 +309,10 @@ export default function App() {
 
   const handlePickFolder = async () => {
     try {
-      const res = await fetch('/api/workspaces/pick-folder', { method: 'POST' })
+      const res = await fetch('/api/projects/pick-folder', { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
-        return data.folder || null
+        return data.path || data.folder || null
       }
     } catch (e) {
       console.error('Pick folder error:', e)
@@ -320,54 +320,54 @@ export default function App() {
     return null
   }
 
-  const handleSaveWorkspace = async (wsData) => {
-    if (workspaceModalMode === 'edit' && editingWorkspace) {
-      const res = await fetch(`/api/workspaces/${editingWorkspace.id}`, {
+  const handleSaveProject = async (prjData) => {
+    if (projectModalMode === 'edit' && editingProject) {
+      const res = await fetch(`/api/projects/${editingProject.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(wsData),
+        body: JSON.stringify(prjData),
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.detail || 'Failed to update workspace')
+        throw new Error(err.detail || 'Failed to update project')
       }
     } else {
-      const res = await fetch('/api/workspaces', {
+      const res = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(wsData),
+        body: JSON.stringify(prjData),
       })
       if (!res.ok) {
         const err = await res.json()
-        throw new Error(err.detail || 'Failed to create workspace')
+        throw new Error(err.detail || 'Failed to create project')
       }
       const data = await res.json()
-      if (data.workspace?.id) {
-        setActiveWorkspaceId(data.workspace.id)
+      if (data.id) {
+        setActiveProjectId(data.id)
       }
     }
-    await fetchWorkspaces()
+    await fetchProjects()
   }
 
-  const handleDeleteWorkspace = async (e, ws) => {
+  const handleDeleteProject = async (e, prj) => {
     if (e) e.stopPropagation()
-    const confirmText = ws.is_external
-      ? `Unlink workspace "${ws.name}"? This removes the workspace from Local AI Studio. Your files on disk at "${ws.path}" will NOT be deleted.`
-      : `Delete workspace "${ws.name}"? This unlinks the workspace from Local AI Studio.`
+    const confirmText = prj.is_external
+      ? `Unlink project "${prj.name}"? This removes the project from Local AI Studio. Your files on disk at "${prj.path}" will NOT be deleted.`
+      : `Delete project "${prj.name}"? This unlinks the project from Local AI Studio.`
     if (!window.confirm(confirmText)) return
 
     try {
-      const res = await fetch(`/api/workspaces/${ws.id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/projects/${prj.id}`, { method: 'DELETE' })
       if (res.ok) {
-        if (activeWorkspaceId === ws.id) {
-          setActiveWorkspaceId(null)
+        if (activeProjectId === prj.id) {
+          setActiveProjectId(null)
           startNewChat(null)
         }
-        await fetchWorkspaces()
+        await fetchProjects()
         await fetchConversations(null)
       }
     } catch (err) {
-      console.error('Failed to delete workspace:', err)
+      console.error('Failed to delete project:', err)
     }
   }
 
@@ -389,17 +389,18 @@ export default function App() {
 
   const handleSaveFileContent = async (relPath, newContent) => {
     try {
-      const res = await fetch('/api/workspace/file-content', {
+      const res = await fetch('/api/project/file-content', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           path: relPath,
           content: newContent,
-          workspace_id: activeWorkspaceId,
+          project_id: activeProjectId,
+          workspace_id: activeProjectId,
         }),
       })
       if (res.ok) {
-        await fetchWorkspaceFiles(activeWorkspaceId)
+        await fetchProjectFiles(activeProjectId)
         return true
       }
       return false
@@ -413,19 +414,20 @@ export default function App() {
     if (!backupPath) return
     setRevertingBackup(backupPath)
     try {
-      const res = await fetch('/api/workspace/revert-backup', {
+      const res = await fetch('/api/project/revert-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           backup_filepath: backupPath,
-          workspace_id: activeWorkspaceId,
+          project_id: activeProjectId,
+          workspace_id: activeProjectId,
         }),
       })
       if (res.ok) {
-        await fetchWorkspaceFiles(activeWorkspaceId)
-        await fetchArtifacts(activeWorkspaceId)
-        if (editingWorkspaceFile) {
-          await handleViewWorkspaceFile(editingWorkspaceFile.relative_path)
+        await fetchProjectFiles(activeProjectId)
+        await fetchArtifacts(activeProjectId)
+        if (editingProjectFile) {
+          await handleViewProjectFile(editingProjectFile.relative_path)
         }
       }
     } catch (err) {
@@ -439,20 +441,21 @@ export default function App() {
     if (!fn || !fn.trim()) return
     const cleanFn = fn.trim()
     try {
-      const res = await fetch('/api/workspace/file-content', {
+      const res = await fetch('/api/project/file-content', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           path: cleanFn,
           content: '',
-          workspace_id: activeWorkspaceId,
+          project_id: activeProjectId,
+          workspace_id: activeProjectId,
         }),
       })
       if (res.ok) {
         setNewFileModalOpen(false)
         setNewFileName('')
-        await fetchWorkspaceFiles(activeWorkspaceId)
-        await handleViewWorkspaceFile(cleanFn)
+        await fetchProjectFiles(activeProjectId)
+        await handleViewProjectFile(cleanFn)
       }
     } catch (err) {
       console.error('Failed to create new file:', err)
@@ -498,10 +501,11 @@ export default function App() {
       if (activeConvId) {
         formData.append('conversation_id', activeConvId)
       }
-      if (activeWorkspaceId) {
-        formData.append('workspace_id', activeWorkspaceId)
+      if (activeProjectId) {
+        formData.append('project_id', activeProjectId)
+        formData.append('workspace_id', activeProjectId)
       }
-      const r = await fetch('/api/workspace/upload', {
+      const r = await fetch('/api/project/upload', {
         method: 'POST',
         body: formData,
       })
@@ -509,8 +513,8 @@ export default function App() {
         const data = await r.json()
         if (data.files && data.files.length > 0) {
           setAttachedFiles((prev) => [...prev, ...data.files])
-          await fetchArtifacts(activeWorkspaceId)
-          await fetchWorkspaceFiles(activeWorkspaceId)
+          await fetchArtifacts(activeProjectId)
+          await fetchProjectFiles(activeProjectId)
         }
       }
     } catch (err) {
@@ -518,7 +522,7 @@ export default function App() {
     } finally {
       setIsUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
-      if (workspaceUploadRef.current) workspaceUploadRef.current.value = ''
+      if (projectUploadRef.current) projectUploadRef.current.value = ''
     }
   }
 
@@ -546,28 +550,28 @@ export default function App() {
     }
   }
 
-  const handleOpenWorkspaceFolder = async () => {
+  const handleOpenProjectFolder = async () => {
     try {
-      const url = activeWorkspaceId
-        ? `/api/workspace/open-folder?workspace_id=${activeWorkspaceId}`
-        : '/api/workspace/open-folder'
+      const url = activeProjectId
+        ? `/api/project/open-folder?project_id=${activeProjectId}`
+        : '/api/project/open-folder'
       await fetch(url, { method: 'POST' })
     } catch (err) {
-      console.error('Failed to open workspace folder:', err)
+      console.error('Failed to open project folder:', err)
     }
   }
 
-  const handleViewWorkspaceFile = async (relPath) => {
+  const handleViewProjectFile = async (relPath) => {
     try {
-      const url = activeWorkspaceId
-        ? `/api/workspace/file-content?path=${encodeURIComponent(relPath)}&workspace_id=${activeWorkspaceId}`
-        : `/api/workspace/file-content?path=${encodeURIComponent(relPath)}`
+      const url = activeProjectId
+        ? `/api/project/file-content?path=${encodeURIComponent(relPath)}&project_id=${activeProjectId}`
+        : `/api/project/file-content?path=${encodeURIComponent(relPath)}`
       const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
         setViewingFile(data)
-        setEditingWorkspaceFile(data)
-        setWorkspaceTab('workspace')
+        setEditingProjectFile(data)
+        setProjectTab('project')
         setFilePanelOpen(true)
       }
     } catch (e) {
@@ -575,14 +579,14 @@ export default function App() {
     }
   }
 
-  const handleAttachWorkspaceFile = (wf) => {
+  const handleAttachProjectFile = (wf) => {
     if (attachedFiles.some((af) => af.path === wf.relative_path || af.filename === wf.name)) {
       return
     }
     const newAttached = {
       title: wf.name,
       filename: wf.name,
-      path: `workspace/${wf.relative_path}`,
+      path: `projects/${wf.relative_path}`,
       url: `/api/artifacts/file/${wf.name}`,
       category: wf.category,
       size_bytes: wf.size_bytes,
@@ -590,25 +594,25 @@ export default function App() {
     setAttachedFiles((prev) => [...prev, newAttached])
   }
 
-  const handleDeleteWorkspaceFile = async (e, relPath) => {
+  const handleDeleteProjectFile = async (e, relPath) => {
     if (e) e.stopPropagation()
     try {
-      const url = activeWorkspaceId
-        ? `/api/workspace/file?path=${encodeURIComponent(relPath)}&workspace_id=${activeWorkspaceId}`
-        : `/api/workspace/file?path=${encodeURIComponent(relPath)}`
+      const url = activeProjectId
+        ? `/api/project/file?path=${encodeURIComponent(relPath)}&project_id=${activeProjectId}`
+        : `/api/project/file?path=${encodeURIComponent(relPath)}`
       const r = await fetch(url, { method: 'DELETE' })
       if (r.ok) {
         if (viewingFile?.relative_path === relPath) {
           setViewingFile(null)
         }
-        if (editingWorkspaceFile?.relative_path === relPath) {
-          setEditingWorkspaceFile(null)
+        if (editingProjectFile?.relative_path === relPath) {
+          setEditingProjectFile(null)
         }
-        await fetchWorkspaceFiles(activeWorkspaceId)
-        await fetchArtifacts(activeWorkspaceId)
+        await fetchProjectFiles(activeProjectId)
+        await fetchArtifacts(activeProjectId)
       }
     } catch (e) {
-      console.error('Failed to delete workspace file:', e)
+      console.error('Failed to delete project file:', e)
     }
   }
 
@@ -618,13 +622,13 @@ export default function App() {
 
   useEffect(() => {
     fetchSystemStatus()
-    fetchWorkspaces()
-    fetchConversations(activeWorkspaceId)
-    fetchArtifacts(activeWorkspaceId)
-    fetchWorkspaceFiles(activeWorkspaceId)
+    fetchProjects()
+    fetchConversations(activeProjectId)
+    fetchArtifacts(activeProjectId)
+    fetchProjectFiles(activeProjectId)
     const interval = setInterval(fetchSystemStatus, 10000)
     return () => clearInterval(interval)
-  }, [activeWorkspaceId])
+  }, [activeProjectId])
 
   const loadConversation = async (convId) => {
     try {
@@ -632,7 +636,7 @@ export default function App() {
       if (r.ok) {
         const data = await r.json()
         setActiveConvId(data.id)
-        setActiveWorkspaceId(data.workspace_id || null)
+        setActiveProjectId(data.project_id || data.workspace_id || null)
         setMessages(data.messages || [])
         setChatContext(data.context || '')
         setContextExpanded(Boolean(data.context))
@@ -640,18 +644,18 @@ export default function App() {
         if (typeof window !== 'undefined' && window.innerWidth < 1024) {
           setLeftSidebarOpen(false)
         }
-        await fetchWorkspaceFiles(data.workspace_id || null)
-        await fetchArtifacts(data.workspace_id || null)
+        await fetchProjectFiles(data.project_id || data.workspace_id || null)
+        await fetchArtifacts(data.project_id || data.workspace_id || null)
       }
     } catch (e) {
       console.error(e)
     }
   }
 
-  const startNewChat = (wsId = undefined) => {
+  const startNewChat = (prjId = undefined) => {
     setActiveConvId(null)
-    const targetWsId = wsId !== undefined ? wsId : activeWorkspaceId
-    setActiveWorkspaceId(targetWsId)
+    const targetPrjId = prjId !== undefined ? prjId : activeProjectId
+    setActiveProjectId(targetPrjId)
     setMessages([])
     setChatContext('')
     setContextExpanded(true)
@@ -660,8 +664,8 @@ export default function App() {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setLeftSidebarOpen(false)
     }
-    fetchWorkspaceFiles(targetWsId)
-    fetchArtifacts(targetWsId)
+    fetchProjectFiles(targetPrjId)
+    fetchArtifacts(targetPrjId)
     handleFlushVram(null)
   }
 
@@ -686,8 +690,8 @@ export default function App() {
     } else {
       await fetchSystemStatus()
     }
-    await fetchConversations()
-    await fetchArtifacts()
+    await fetchConversations(activeProjectId)
+    await fetchArtifacts(activeProjectId)
   }
 
   const handleDeleteArtifact = async (e, artId) => {
@@ -703,8 +707,8 @@ export default function App() {
         artifacts: (m.artifacts || []).filter((a) => a.id !== artId),
       }))
     )
-    await fetchArtifacts()
-    await fetchWorkspaceFiles()
+    await fetchArtifacts(activeProjectId)
+    await fetchProjectFiles(activeProjectId)
   }
 
   const handleUpdateSetting = async (updates) => {
@@ -914,7 +918,8 @@ export default function App() {
         signal: abortController.signal,
         body: JSON.stringify({
           conversation_id: activeConvId,
-          workspace_id: activeWorkspaceId,
+          project_id: activeProjectId,
+          workspace_id: activeProjectId,
           prompt: promptText,
           model: selectedModel,
           mode: imageGenMode ? 'image' : (orchestratorMode ? 'agent' : 'chat'),
@@ -992,7 +997,7 @@ export default function App() {
               setSelectedArtifact(newArts[0])
               setActiveSheetIdx(0)
               setFilePanelOpen(true)
-              fetchArtifacts(activeWorkspaceId)
+              fetchArtifacts(activeProjectId)
             }
             setMessages((prev) =>
               prev.map((m) =>
@@ -1030,9 +1035,9 @@ export default function App() {
             setMessages((prev) =>
               prev.map((m) => (m.id === tempAssistantId ? ev.message : m))
             )
-            fetchConversations(activeWorkspaceId)
-            fetchArtifacts(activeWorkspaceId)
-            fetchWorkspaceFiles(activeWorkspaceId)
+            fetchConversations(activeProjectId)
+            fetchArtifacts(activeProjectId)
+            fetchProjectFiles(activeProjectId)
             fetchSystemStatus()
           }
         }
@@ -1061,8 +1066,8 @@ export default function App() {
       abortControllerRef.current = null
       setIsStreaming(false)
       setStreamStatus('')
-      await fetchArtifacts()
-      await fetchWorkspaceFiles()
+      await fetchArtifacts(activeProjectId)
+      await fetchProjectFiles(activeProjectId)
     }
   }
 
@@ -1118,7 +1123,7 @@ export default function App() {
             {/* Breadcrumb Hierarchy */}
             <div className="flex items-center gap-1.5 text-xs min-w-0 truncate">
               <span className="font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
-                {workspaces.find((w) => w.id === activeWorkspaceId)?.name || 'General'}
+                {projects.find((w) => w.id === activeProjectId)?.name || 'General'}
               </span>
               <span className="text-slate-600">/</span>
               <span className="text-slate-400 truncate max-w-[120px] sm:max-w-[240px]">
@@ -1191,7 +1196,7 @@ export default function App() {
             title="View, edit, or download project files and code"
           >
             <FolderOpen className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden sm:inline font-medium">{activeWorkspaceId ? 'Project Files' : 'Files'}</span>
+            <span className="hidden sm:inline font-medium">{activeProjectId ? 'Project Files' : 'Files'}</span>
             {artifacts.length > 0 && (
               <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-black/40 text-slate-200 tabular-nums">
                 {artifacts.length}
@@ -1201,7 +1206,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* MAIN WORKSPACE AREA */}
+      {/* MAIN STUDIO AREA */}
       <div className="flex-1 flex min-h-0 relative overflow-hidden">
         {/* Mobile Backdrop for Left Sidebar */}
         {leftSidebarOpen && (
@@ -1211,15 +1216,15 @@ export default function App() {
           />
         )}
 
-        {/* LEFT SIDEBAR: WORKSPACES & CONVERSATIONS */}
+        {/* LEFT SIDEBAR: PROJECTS & CONVERSATIONS */}
         {leftSidebarOpen && (
           <aside className="fixed lg:static inset-y-0 left-0 w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-40">
             <div className="p-3 space-y-4 overflow-y-auto flex-1">
-              {/* Top Action Row: New Chat + New Workspace */}
+              {/* Top Action Row: New Chat + New Project */}
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => startNewChat(activeWorkspaceId)}
+                  onClick={() => startNewChat(activeProjectId)}
                   className="flex-1 h-9 px-2.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white font-medium text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer"
                   title="Start a new chat"
                 >
@@ -1230,9 +1235,9 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
-                    setWorkspaceModalMode('create')
-                    setEditingWorkspace(null)
-                    setWorkspaceModalOpen(true)
+                    setProjectModalMode('create')
+                    setEditingProject(null)
+                    setProjectModalOpen(true)
                   }}
                   className="h-9 px-2.5 rounded-lg border border-white/[0.1] bg-[#14171F] hover:bg-[#1C202C] text-slate-200 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer shrink-0"
                   title="Create a new project or link an existing folder on your PC"
@@ -1258,30 +1263,30 @@ export default function App() {
                     <span>PROJECTS</span>
                   </div>
                   <span className="font-mono text-slate-500 tabular-nums">
-                    {workspaces.length}
+                    {projects.length}
                   </span>
                 </div>
 
-                {workspaces.length === 0 ? (
+                {projects.length === 0 ? (
                   <div className="px-3 py-3 text-[11px] text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed mb-3">
                     No projects yet. Click <strong className="text-slate-400">+ Project</strong> above to link an existing folder or create a new project.
                   </div>
                 ) : (
                   <div className="space-y-1 mb-3">
-                    {workspaces.map((ws) => {
-                      const isSelected = activeWorkspaceId === ws.id
-                      const isCollapsed = Boolean(collapsedWorkspaces[ws.id])
-                      const wsChats = conversations.filter((c) => c.workspace_id === ws.id)
+                    {projects.map((prj) => {
+                      const isSelected = activeProjectId === prj.id
+                      const isCollapsed = Boolean(collapsedProjects[prj.id])
+                      const prjChats = conversations.filter((c) => (c.project_id === prj.id || c.workspace_id === prj.id))
 
                       return (
-                        <div key={ws.id} className="rounded-lg overflow-hidden border border-white/[0.05] bg-[#0E1118]">
-                          {/* Workspace Item Header */}
+                        <div key={prj.id} className="rounded-lg overflow-hidden border border-white/[0.05] bg-[#0E1118]">
+                          {/* Project Item Header */}
                           <div
                             onClick={() => {
-                              setActiveWorkspaceId(ws.id)
-                              fetchWorkspaceFiles(ws.id)
-                              fetchArtifacts(ws.id)
-                              setCollapsedWorkspaces((prev) => ({ ...prev, [ws.id]: !prev[ws.id] }))
+                              setActiveProjectId(prj.id)
+                              fetchProjectFiles(prj.id)
+                              fetchArtifacts(prj.id)
+                              setCollapsedProjects((prev) => ({ ...prev, [prj.id]: !prev[prj.id] }))
                             }}
                             className={`group px-2.5 py-1.5 flex items-center justify-between gap-1.5 text-xs cursor-pointer transition ${
                               isSelected
@@ -1295,8 +1300,8 @@ export default function App() {
                               ) : (
                                 <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                               )}
-                              <span className="truncate">{ws.name}</span>
-                              {ws.is_external && (
+                              <span className="truncate">{prj.name}</span>
+                              {prj.is_external && (
                                 <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 shrink-0">
                                   PC
                                 </span>
@@ -1308,7 +1313,7 @@ export default function App() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  startNewChat(ws.id)
+                                  startNewChat(prj.id)
                                 }}
                                 title="New chat in this project"
                                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
@@ -1319,9 +1324,9 @@ export default function App() {
                                 type="button"
                                 onClick={(e) => {
                                   e.stopPropagation()
-                                  setEditingWorkspace(ws)
-                                  setWorkspaceModalMode('edit')
-                                  setWorkspaceModalOpen(true)
+                                  setEditingProject(prj)
+                                  setProjectModalMode('edit')
+                                  setProjectModalOpen(true)
                                 }}
                                 title="Edit project settings & guidelines"
                                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
@@ -1330,8 +1335,8 @@ export default function App() {
                               </button>
                               <button
                                 type="button"
-                                onClick={(e) => handleDeleteWorkspace(e, ws)}
-                                title={ws.is_external ? 'Unlink project (keeps files on disk)' : 'Delete project'}
+                                onClick={(e) => handleDeleteProject(e, prj)}
+                                title={prj.is_external ? 'Unlink project (keeps files on disk)' : 'Delete project'}
                                 className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -1339,15 +1344,15 @@ export default function App() {
                             </div>
                           </div>
 
-                          {/* Workspace Chats (if expanded) */}
+                          {/* Project Chats (if expanded) */}
                           {!isCollapsed && (
                             <div className="pl-4 pr-1 py-1 space-y-0.5 bg-black/20 border-t border-white/[0.04]">
-                              {wsChats.length === 0 ? (
+                              {prjChats.length === 0 ? (
                                 <div className="py-1 px-2 text-[10px] text-slate-500 italic">
                                   No chats yet. Click + to start.
                                 </div>
                               ) : (
-                                wsChats.map((c) => (
+                                prjChats.map((c) => (
                                   <div
                                     key={c.id}
                                     onClick={() => loadConversation(c.id)}
@@ -1386,18 +1391,18 @@ export default function App() {
                     <span>GENERAL CHATS</span>
                   </div>
                   <span className="font-mono text-slate-500 tabular-nums">
-                    {conversations.filter((c) => !c.workspace_id).length}
+                    {conversations.filter((c) => !c.project_id && !c.workspace_id).length}
                   </span>
                 </div>
 
-                {conversations.filter((c) => !c.workspace_id).length === 0 ? (
+                {conversations.filter((c) => !c.project_id && !c.workspace_id).length === 0 ? (
                   <div className="px-3 py-3 text-[11px] text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed">
                     General chats are saved privately on your PC.
                   </div>
                 ) : (
                   <div className="space-y-0.5">
                     {conversations
-                      .filter((c) => !c.workspace_id)
+                      .filter((c) => !c.project_id && !c.workspace_id)
                       .map((c) => (
                         <div
                           key={c.id}
@@ -1763,8 +1768,8 @@ export default function App() {
                           onSelectArtifact={(art) => {
                             setSelectedArtifact(art)
                             setActiveSheetIdx(0)
-                            setWorkspaceTab('artifacts')
-                            setEditingWorkspaceFile(null)
+                            setProjectTab('artifacts')
+                            setEditingProjectFile(null)
                             setFilePanelOpen(true)
                           }}
                           onDeleteArtifact={handleDeleteArtifact}
@@ -1828,7 +1833,7 @@ export default function App() {
                 {/* Floating @ Autocomplete Dropdown */}
                 {atQuery !== null && (
                   <AtMentionDropdown
-                    files={workspaceFiles}
+                    files={projectFiles}
                     query={atQuery}
                     selectedIndex={atSelectedIndex}
                     onSelect={(file) => {
@@ -1840,7 +1845,7 @@ export default function App() {
                       if (atIdx !== -1) {
                         setPromptInput(textBefore.slice(0, atIdx) + `@${file.name} ` + textAfter)
                       }
-                      handleAttachWorkspaceFile(file)
+                      handleAttachProjectFile(file)
                       setAtQuery(null)
                     }}
                   />
@@ -1933,7 +1938,7 @@ export default function App() {
                   onPaste={handleClipboardPaste}
                   onKeyDown={(e) => {
                     if (atQuery !== null) {
-                      const filteredFiles = (workspaceFiles || []).filter((f) =>
+                      const filteredFiles = (projectFiles || []).filter((f) =>
                         (f.name || '').toLowerCase().includes(atQuery.toLowerCase())
                       ).slice(0, 8)
 
@@ -1959,7 +1964,7 @@ export default function App() {
                           if (atIdx !== -1) {
                             setPromptInput(textBefore.slice(0, atIdx) + `@${sel.name} ` + textAfter)
                           }
-                          handleAttachWorkspaceFile(sel)
+                          handleAttachProjectFile(sel)
                           setAtQuery(null)
                         }
                         return
@@ -2107,17 +2112,17 @@ export default function App() {
                 <FolderOpen className="w-4 h-4 text-[#D97757] shrink-0" />
                 <div className="min-w-0">
                   <div className="text-xs font-semibold text-white truncate">
-                    {activeWorkspace ? activeWorkspace.name : 'Project & Files'}
+                    {projects.find((p) => p.id === activeProjectId)?.name || 'Project & Files'}
                   </div>
                   <div className="text-[10px] font-mono text-slate-400 truncate">
-                    {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}
+                    {projectRoot ? projectRoot.split(/[/\\]/).slice(-2).join('/') : 'projects/'}
                   </div>
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 <button
                   type="button"
-                  onClick={handleOpenWorkspaceFolder}
+                  onClick={handleOpenProjectFolder}
                   className="h-7 px-2 rounded-md border border-white/[0.08] bg-[#141822] hover:bg-[#1E2433] text-xs text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer"
                   title="Reveal project directory in Windows File Explorer"
                 >
@@ -2150,7 +2155,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => workspaceUploadRef.current?.click()}
+                  onClick={() => projectUploadRef.current?.click()}
                   className="h-7 px-2.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-slate-300 hover:text-white font-medium flex items-center gap-1 transition cursor-pointer"
                   title="Import existing files from your computer into this project"
                 >
@@ -2158,7 +2163,7 @@ export default function App() {
                   <span>Import Files</span>
                 </button>
                 <input
-                  ref={workspaceUploadRef}
+                  ref={projectUploadRef}
                   type="file"
                   multiple
                   onChange={(e) => {
@@ -2173,8 +2178,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  fetchWorkspaceFiles(activeWorkspaceId)
-                  fetchArtifacts(activeWorkspaceId)
+                  fetchProjectFiles(activeProjectId)
+                  fetchArtifacts(activeProjectId)
                 }}
                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
                 title="Refresh project files list"
@@ -2188,25 +2193,25 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setWorkspaceTab('workspace')
-                  fetchWorkspaceFiles(activeWorkspaceId)
+                  setProjectTab('project')
+                  fetchProjectFiles(activeProjectId)
                 }}
                 className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                  workspaceTab === 'workspace'
+                  projectTab === 'project'
                     ? 'bg-[#181C26] text-white border border-white/[0.1]'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <span>Project Files</span>
                 <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
-                  {workspaceFiles.length}
+                  {projectFiles.length}
                 </span>
               </button>
               <button
                 type="button"
-                onClick={() => setWorkspaceTab('artifacts')}
+                onClick={() => setProjectTab('artifacts')}
                 className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                  workspaceTab === 'artifacts'
+                  projectTab === 'artifacts'
                     ? 'bg-[#181C26] text-white border border-white/[0.1]'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
@@ -2218,16 +2223,16 @@ export default function App() {
               </button>
             </div>
 
-            {workspaceTab === 'workspace' ? (
-              editingWorkspaceFile ? (
+            {projectTab === 'project' ? (
+              editingProjectFile ? (
                 <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E]">
-                  {editingWorkspaceFile.type === 'image' ? (
+                  {editingProjectFile.type === 'image' ? (
                     <div className="flex-1 flex flex-col min-h-0">
                       <div className="px-3 py-2 bg-[#12151E] border-b border-white/[0.08] flex items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 px-2 rounded-md bg-white/[0.06] hover:bg-white/[0.1] text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer shrink-0"
                             title="Back to Project Files list"
                           >
@@ -2235,18 +2240,18 @@ export default function App() {
                             <span className="hidden sm:inline text-[11px]">Files</span>
                           </button>
                           <ArtifactTypeBadge category="image" />
-                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingWorkspaceFile.relative_path}>
-                            {editingWorkspaceFile.name}
+                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingProjectFile.relative_path}>
+                            {editingProjectFile.name}
                           </span>
                           <span className="text-[10px] font-mono text-slate-400 tabular-nums">
-                            {((editingWorkspaceFile.size_bytes || 0) / 1024).toFixed(1)} KB
+                            {((editingProjectFile.size_bytes || 0) / 1024).toFixed(1)} KB
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {editingWorkspaceFile.url && (
+                          {editingProjectFile.url && (
                             <a
-                              href={`${editingWorkspaceFile.url}&download=true`}
-                              download={editingWorkspaceFile.name}
+                              href={`${editingProjectFile.url}&download=true`}
+                              download={editingProjectFile.name}
                               className="h-7 px-2.5 rounded bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium flex items-center gap-1 transition"
                             >
                               <Download className="w-3.5 h-3.5" />
@@ -2255,7 +2260,7 @@ export default function App() {
                           )}
                           <button
                             type="button"
-                            onClick={() => handleDeleteWorkspaceFile(null, editingWorkspaceFile.relative_path)}
+                            onClick={() => handleDeleteProjectFile(null, editingProjectFile.relative_path)}
                             className="h-7 w-7 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center justify-center transition cursor-pointer"
                             title="Permanently delete file"
                           >
@@ -2263,7 +2268,7 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 w-7 rounded bg-white/[0.06] hover:bg-white/[0.1] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer"
                             title="Close preview"
                           >
@@ -2273,19 +2278,19 @@ export default function App() {
                       </div>
                       <div className="flex-1 overflow-auto p-4 flex items-center justify-center bg-[#07080C]">
                         <img
-                          src={editingWorkspaceFile.url}
-                          alt={editingWorkspaceFile.name}
+                          src={editingProjectFile.url}
+                          alt={editingProjectFile.name}
                           className="max-w-full max-h-[75vh] rounded-lg border border-white/[0.08] shadow-lg object-contain"
                         />
                       </div>
                     </div>
-                  ) : editingWorkspaceFile.type === 'spreadsheet' ? (
+                  ) : editingProjectFile.type === 'spreadsheet' ? (
                     <div className="flex-1 flex flex-col min-h-0">
                       <div className="px-3 py-2 bg-[#12151E] border-b border-white/[0.08] flex items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 px-2 rounded-md bg-white/[0.06] hover:bg-white/[0.1] text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer shrink-0"
                             title="Back to Project Files list"
                           >
@@ -2293,15 +2298,15 @@ export default function App() {
                             <span className="hidden sm:inline text-[11px]">Files</span>
                           </button>
                           <ArtifactTypeBadge category="spreadsheet" />
-                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingWorkspaceFile.relative_path}>
-                            {editingWorkspaceFile.name}
+                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingProjectFile.relative_path}>
+                            {editingProjectFile.name}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {editingWorkspaceFile.url && (
+                          {editingProjectFile.url && (
                             <a
-                              href={`${editingWorkspaceFile.url}&download=true`}
-                              download={editingWorkspaceFile.name}
+                              href={`${editingProjectFile.url}&download=true`}
+                              download={editingProjectFile.name}
                               className="h-7 px-2.5 rounded bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium flex items-center gap-1 transition"
                             >
                               <Download className="w-3.5 h-3.5" />
@@ -2310,7 +2315,7 @@ export default function App() {
                           )}
                           <button
                             type="button"
-                            onClick={() => handleDeleteWorkspaceFile(null, editingWorkspaceFile.relative_path)}
+                            onClick={() => handleDeleteProjectFile(null, editingProjectFile.relative_path)}
                             className="h-7 w-7 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center justify-center transition cursor-pointer"
                             title="Permanently delete file"
                           >
@@ -2318,7 +2323,7 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 w-7 rounded bg-white/[0.06] hover:bg-white/[0.1] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer"
                             title="Close preview"
                           >
@@ -2328,19 +2333,19 @@ export default function App() {
                       </div>
                       <div className="flex-1 overflow-auto p-4 bg-[#0A0B0E]">
                         <SpreadsheetPreview
-                          artifact={editingWorkspaceFile}
+                          artifact={editingProjectFile}
                           activeSheetIdx={activeSheetIdx}
                           setActiveSheetIdx={setActiveSheetIdx}
                         />
                       </div>
                     </div>
-                  ) : editingWorkspaceFile.type === 'document' ? (
+                  ) : editingProjectFile.type === 'document' ? (
                     <div className="flex-1 flex flex-col min-h-0">
                       <div className="px-3 py-2 bg-[#12151E] border-b border-white/[0.08] flex items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2 min-w-0 flex-1">
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 px-2 rounded-md bg-white/[0.06] hover:bg-white/[0.1] text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer shrink-0"
                             title="Back to Project Files list"
                           >
@@ -2348,15 +2353,15 @@ export default function App() {
                             <span className="hidden sm:inline text-[11px]">Files</span>
                           </button>
                           <ArtifactTypeBadge category="document" />
-                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingWorkspaceFile.relative_path}>
-                            {editingWorkspaceFile.name}
+                          <span className="font-semibold text-white truncate font-mono text-[11px]" title={editingProjectFile.relative_path}>
+                            {editingProjectFile.name}
                           </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
-                          {editingWorkspaceFile.url && (
+                          {editingProjectFile.url && (
                             <a
-                              href={`${editingWorkspaceFile.url}&download=true`}
-                              download={editingWorkspaceFile.name}
+                              href={`${editingProjectFile.url}&download=true`}
+                              download={editingProjectFile.name}
                               className="h-7 px-2.5 rounded bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium flex items-center gap-1 transition"
                             >
                               <Download className="w-3.5 h-3.5" />
@@ -2365,7 +2370,7 @@ export default function App() {
                           )}
                           <button
                             type="button"
-                            onClick={() => handleDeleteWorkspaceFile(null, editingWorkspaceFile.relative_path)}
+                            onClick={() => handleDeleteProjectFile(null, editingProjectFile.relative_path)}
                             className="h-7 w-7 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center justify-center transition cursor-pointer"
                             title="Permanently delete file"
                           >
@@ -2373,7 +2378,7 @@ export default function App() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => setEditingWorkspaceFile(null)}
+                            onClick={() => setEditingProjectFile(null)}
                             className="h-7 w-7 rounded bg-white/[0.06] hover:bg-white/[0.1] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer"
                             title="Close preview"
                           >
@@ -2382,10 +2387,10 @@ export default function App() {
                         </div>
                       </div>
                       <div className="flex-1 overflow-auto p-4 bg-[#0A0B0E]">
-                        {(editingWorkspaceFile.name || '').toLowerCase().endsWith('.pdf') ? (
+                        {(editingProjectFile.name || '').toLowerCase().endsWith('.pdf') ? (
                           <iframe
-                            title={editingWorkspaceFile.name}
-                            src={editingWorkspaceFile.url}
+                            title={editingProjectFile.name}
+                            src={editingProjectFile.url}
                             className="w-full h-full min-h-[450px] rounded-lg border border-white/[0.08] bg-white"
                           />
                         ) : (
@@ -2397,32 +2402,32 @@ export default function App() {
                     </div>
                   ) : (
                     <CodeEditorPanel
-                      file={editingWorkspaceFile}
-                      workspaceId={activeWorkspaceId}
+                      file={editingProjectFile}
+                      projectId={activeProjectId}
                       onSave={handleSaveFileContent}
-                      onClose={() => setEditingWorkspaceFile(null)}
-                      onDelete={(path) => handleDeleteWorkspaceFile(null, path)}
+                      onClose={() => setEditingProjectFile(null)}
+                      onDelete={(path) => handleDeleteProjectFile(null, path)}
                     />
                   )}
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E] p-3 overflow-y-auto">
-                  {workspaceFiles.length === 0 ? (
+                  {projectFiles.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
                       <Folder className="w-8 h-8 mb-2 text-slate-600" />
                       <p className="text-xs leading-relaxed">
-                        No files in workspace yet. Attach files in chat, click "+ File" to create one, or click "Upload".
+                        No files in project yet. Attach files in chat, click "+ New File" to create one, or click "Import Files".
                       </p>
                     </div>
                   ) : (
                     <div className="space-y-1.5">
-                      {workspaceFiles.map((wf, idx) => (
+                      {projectFiles.map((wf, idx) => (
                         <div
                           key={idx}
                           className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] hover:border-white/[0.1] flex items-center justify-between gap-2 transition group"
                         >
                           <div
-                            onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                            onClick={() => handleViewProjectFile(wf.relative_path)}
                             className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
                             title="Click to edit and view file"
                           >
@@ -2438,7 +2443,7 @@ export default function App() {
                             </span>
                             <button
                               type="button"
-                              onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                              onClick={() => handleViewProjectFile(wf.relative_path)}
                               className="p-1.5 rounded bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white transition cursor-pointer"
                               title="Edit file in in-app code editor"
                             >
@@ -2446,7 +2451,7 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleAttachWorkspaceFile(wf)}
+                              onClick={() => handleAttachProjectFile(wf)}
                               className="p-1.5 rounded bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] transition cursor-pointer"
                               title="Attach file to chat prompt"
                             >
@@ -2454,7 +2459,7 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={(e) => handleDeleteWorkspaceFile(e, wf.relative_path)}
+                              onClick={(e) => handleDeleteProjectFile(e, wf.relative_path)}
                               className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 transition cursor-pointer"
                               title="Delete file permanently from disk"
                             >
@@ -2690,13 +2695,13 @@ export default function App() {
         setActiveTab={setSettingsTab}
       />
 
-      {/* WORKSPACE / PROJECT MODAL (MANAGED & EXTERNAL FOLDER) */}
-      <WorkspaceModal
-        isOpen={workspaceModalOpen}
-        onClose={() => setWorkspaceModalOpen(false)}
-        mode={workspaceModalMode}
-        workspace={editingWorkspace}
-        onSave={handleSaveWorkspace}
+      {/* PROJECT MODAL (MANAGED & EXTERNAL FOLDER) */}
+      <ProjectModal
+        isOpen={projectModalOpen}
+        onClose={() => setProjectModalOpen(false)}
+        mode={projectModalMode}
+        project={editingProject}
+        onSave={handleSaveProject}
         onPickFolder={handlePickFolder}
       />
 
@@ -3452,12 +3457,14 @@ function MessageRow({
             }
             if (
               href.startsWith('/api/artifacts/file/') ||
+              href.startsWith('/api/project/') ||
               href.startsWith('/api/workspace/') ||
+              href.startsWith('projects/') ||
               href.startsWith('workspace/') ||
               href.startsWith('file:///')
             ) {
               e.preventDefault()
-              const cleanPath = href.replace(/^(\/api\/artifacts\/file\/|\/api\/workspace\/file-content\?path=|\/api\/workspace\/raw-file\?path=|workspace\/|file:\/\/\/)/, '')
+              const cleanPath = href.replace(/^(\/api\/artifacts\/file\/|\/api\/project\/file-content\?path=|\/api\/project\/raw-file\?path=|\/api\/workspace\/file-content\?path=|\/api\/workspace\/raw-file\?path=|projects\/|workspace\/|file:\/\/\/)/, '')
               const filename = cleanPath.split(/[/\\]/).pop() || 'file'
               const ext = filename.split('.').pop()?.toLowerCase() || ''
               let category = 'document'
@@ -3471,7 +3478,7 @@ function MessageRow({
                   id: cleanPath,
                   title: filename,
                   filename: filename,
-                  url: href.startsWith('/api/') ? href : `/api/workspace/raw-file?path=${cleanPath}`,
+                  url: href.startsWith('/api/') ? href : `/api/project/raw-file?path=${cleanPath}`,
                   category,
                   size_bytes: 0,
                   preview_data: {},

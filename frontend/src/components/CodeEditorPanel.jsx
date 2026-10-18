@@ -11,7 +11,7 @@ import {
   ArrowLeft,
 } from 'lucide-react'
 
-export default function CodeEditorPanel({ file, workspaceId, onSave, onClose, onDelete }) {
+export default function CodeEditorPanel({ file, projectId, workspaceId, onSave, onClose, onDelete }) {
   const [content, setContent] = useState('')
   const [originalContent, setOriginalContent] = useState('')
   const [isDirty, setIsDirty] = useState(false)

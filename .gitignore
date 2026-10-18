@@ -21,6 +21,10 @@ workspace/artifacts/*
 !workspace/artifacts/.gitkeep
 workspace/projects/*
 !workspace/projects/.gitkeep
+projects/artifacts/*
+!projects/artifacts/.gitkeep
+projects/uploads/*
+!projects/uploads/.gitkeep
 bin/
 models/
 
