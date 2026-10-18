@@ -68,13 +68,22 @@ Directly runs quantized Stable Diffusion checkpoints on your local GPU via Vulka
 * **One-Click Deletion**: Safely delete unused Ollama LLMs or large diffusion checkpoints (`.safetensors`) directly from the UI to reclaim tens of gigabytes of disk space.
 * **Progress Tracking**: Real-time progress bars for Ollama pulls and direct HTTP checkpoint downloads with automatic rename handling.
 
-### 4. Self-Scripting Orchestrator Harness (Antigravity & Claude Code Architecture)
-Upgrades local LLMs from rigid form-fillers into autonomous system engineers equipped with universal execution primitives:
-* **Universal Primitives (`execute_python`, `read_file`, `edit_file_content`, `list_directory`)**: Rather than relying on static schema tools that can only create new files, the agent writes tailored Python scripts on the fly using pre-installed packages (`openpyxl`, `pandas`, `python-docx`, `reportlab`, `matplotlib`, `PIL`).
-* **Multi-Step ReAct Iteration Loop**: Supports up to 5 iterative execution steps per turn (`Sense -> Plan -> Act -> Observe -> Iterate`). The agent can inspect an Excel workbook, extract sheet names, write an `openpyxl` script to update cells/formulas, observe stdout/stderr, self-correct errors, and synthesize the final answer.
-* **Automatic File Backups (`.bak`)**: Before any existing file on the user's PC is modified or overwritten, the system automatically creates a timestamped safety backup (`<filename>.bak_YYYYMMDD_HHMMSS`).
-* **Universal File & Spreadsheet Reader**: Intelligently inspects files: automatically parses `.xlsx` workbooks into sheet listings and structured markdown table previews, formats CSV tables, and reads code/text with exact line numbering.
-* **Dual Execution Modes**: One-click composer toggle between **⚡ Orchestrator Mode** (full multi-step code execution & tool synthesis) and **💬 Chat Mode** (fast conversational responses with zero tool overhead).
+### 4. Antigravity-Grade Orchestrator & Multi-Project Hierarchy
+Upgrades local LLMs from rigid form-fillers into an autonomous pair programmer equipped with universal execution primitives:
+* **Multi-Project Organization**: Create isolated **Managed Projects** (`workspace/projects/<slug>/`) or link any existing directory or repository on your computer (**Link Local PC Folder**) using the native Windows folder picker.
+* **Human-in-the-Loop Tool Permissions**:
+  * **Ask on Write/Exec (Default)**: Automatically permits read-only operations (`read_file`, `list_directory`, `search_web`), but pauses to display an interactive approval card with `[ Allow Once ]`, `[ Always Allow Tool ]`, and `[ Deny ]` before running shell commands, executing code, or editing files.
+  * **Autonomous (Allow All)**: Runs all tools without interruption.
+  * **Plan Only (Read Only)**: Explores codebases and plans changes without modifying files or executing scripts.
+  * **Configurable Matrix**: Fully customizable per-tool permission matrix in Studio Settings (`⚙️`).
+* **In-Stream Unified Red/Green Diffs with 1-Click Rollback**: Displays real-time unified line diffs with addition/deletion counters directly in chat whenever files are modified, accompanied by an instant **`[ ↺ Revert to .bak ]`** rollback button.
+* **In-App Code Editor & Project Explorer**: View and edit code directly in the Right Panel with syntax highlighting, line numbers, and `Ctrl+S` live saving. Import external files from your PC with `[ 📥 Import Files ]` or reveal the folder in Windows File Explorer with `[ 📂 Reveal in Explorer ]`.
+* **Pinned Chat Mode Bar & Zero-Scroll Composer**:
+  * Pinned top-of-chat mode selector (`[ 💬 Chat ]`, `[ ⚡ Orchestrator ]`, `[ 🎨 Image Studio ]`) keeps mode context prominently visible.
+  * Contextual controls (autonomy selector and image style picker) are housed right in the header, keeping the bottom composer clean, responsive, and completely free of horizontal scrolling on any screen size.
+* **Message Branching & Autocomplete**:
+  * `[ ✏️ Edit ]` on user messages truncates subsequent conversation turns to allow clean steering and branching.
+  * Typing `@` in the composer brings up a fuzzy file picker to easily reference project files.
 
 ### 5. Zero-VRAM Gaming Mode & Hardware Auto-Tuner
 * **Zero-VRAM Gaming Mode**: Offloads 100% of LLM execution to your system RAM (e.g. 64GB DDR5) so your discrete GPU (RTX 4070 SUPER) retains 100% dedicated VRAM and 0 FPS drops for modern games.
@@ -86,7 +95,7 @@ Upgrades local LLMs from rigid form-fillers into autonomous system engineers equ
 ### 6. Mobile-First & WCAG 2.1 AA Accessibility
 * **Touch-First Ergonomics**: All interactive buttons, dropdowns, and toggles adhere to a minimum touch target size of **44×44px** with `touch-action: manipulation;`.
 * **Mobile Tap-to-Focus**: Root layout allows unrestricted text selection (`-webkit-user-select: text !important;`) ensuring immediate tap-to-focus on mobile textareas without keyboard dismissal conflicts.
-* **Semantic ARIA Accordions**: Replaces generic divs with accessible `<button type="button">` accordions for tool traces and thinking drawers.
+* **Semantic ARIA Accordions**: Accessible `<button type="button">` accordions for tool traces, thinking drawers, and approval dialogs.
 
 ---
 
@@ -96,15 +105,22 @@ Upgrades local LLMs from rigid form-fillers into autonomous system engineers equ
 Local AI App/
 ├── backend/
 │   ├── __init__.py
-│   ├── agent.py            # Agent orchestrator, prompt compilation, SSE streaming & tool execution
-│   ├── database.py         # aiosqlite layer (WAL mode, secure deletion, message history & settings)
+│   ├── agent.py            # Agent orchestrator, ReAct loop, tool permissions & approval events
+│   ├── database.py         # aiosqlite layer (WAL mode, projects, conversations, artifacts, settings)
 │   ├── hardware.py         # Hardware telemetry, silicon detection, and profile auto-tuning
-│   ├── main.py             # FastAPI application, REST endpoints, LAN guard middleware, and static server
-│   └── tools.py            # Shielded search engine, diffusion router, openpyxl/reportlab builders
+│   ├── main.py             # FastAPI REST endpoints, SSE streaming, LAN guard, and file server
+│   └── tools.py            # Shell execution, diff generator, safe backups, search, and document tools
 ├── frontend/
 │   ├── dist/               # Production compiled bundle served by FastAPI
 │   ├── src/
-│   │   ├── App.jsx         # Primary React 18 component (WCAG AA, mobile-first responsive)
+│   │   ├── components/     # Modular UI components
+│   │   │   ├── AtMentionDropdown.jsx # In-composer @ project file autocomplete dropdown
+│   │   │   ├── CodeEditorPanel.jsx   # In-app code editor with live save (Ctrl+S) and line counts
+│   │   │   ├── DiffViewer.jsx        # Unified red/green file diff viewer with 1-click .bak revert
+│   │   │   ├── SettingsModal.jsx     # 4-tab settings modal (Permissions, Hardware, Privacy, Phone Link)
+│   │   │   ├── ToolApprovalCard.jsx  # Interactive in-stream approval card (Allow Once / Always / Deny)
+│   │   │   └── WorkspaceModal.jsx    # Project creator (Managed Project vs Link PC Folder)
+│   │   ├── App.jsx         # Primary React 18 workstation UI
 │   │   ├── index.css       # Custom scrollbars, touch ergonomics, and typography
 │   │   └── main.jsx        # React root entrypoint
 │   ├── package.json        # Frontend dependencies (Lucide icons, Tailwind, Vite, marked)
@@ -112,8 +128,9 @@ Local AI App/
 ├── bin/                    # Pre-compiled sd-cli.exe Vulkan binary (git ignored)
 ├── models/image/           # Local diffusion checkpoints (.safetensors) (git ignored)
 ├── workspace/
-│   ├── artifacts/          # Generated files, images, spreadsheets, and PDFs (git ignored)
-│   └── projects/           # Multi-file projects created by the agent (git ignored)
+│   ├── artifacts/          # Generated output files, spreadsheets, and media (git ignored)
+│   ├── projects/           # Managed local projects (git ignored)
+│   └── uploads/            # Imported project files (git ignored)
 ├── scripts/
 │   └── download_image_models.py # Helper script to fetch initial checkpoints
 ├── tests/

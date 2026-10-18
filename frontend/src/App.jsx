@@ -1115,7 +1115,7 @@ export default function App() {
             {/* Breadcrumb Hierarchy */}
             <div className="flex items-center gap-1.5 text-xs min-w-0 truncate">
               <span className="font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
-                {workspaces.find((w) => w.id === activeWorkspaceId)?.name || 'Local AI Studio'}
+                {workspaces.find((w) => w.id === activeWorkspaceId)?.name || 'General'}
               </span>
               <span className="text-slate-600">/</span>
               <span className="text-slate-400 truncate max-w-[120px] sm:max-w-[240px]">
@@ -1171,7 +1171,7 @@ export default function App() {
             <span className="hidden sm:inline font-medium">Settings</span>
           </button>
 
-          {/* FILES & WORKSPACE RIGHT PANEL TOGGLE */}
+          {/* FILES & PROJECT RIGHT PANEL TOGGLE */}
           <button
             type="button"
             onClick={() => {
@@ -1185,10 +1185,10 @@ export default function App() {
                 ? 'border-[#D97757]/50 bg-[#D97757]/15 text-white'
                 : 'border-white/[0.08] bg-[#14171F] text-slate-300 hover:bg-[#1B1F2A]'
             }`}
-            title="View, Edit, or Download Created Files and Code"
+            title="View, edit, or download project files and code"
           >
             <FolderOpen className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden sm:inline font-medium">Files</span>
+            <span className="hidden sm:inline font-medium">{activeWorkspaceId ? 'Project Files' : 'Files'}</span>
             {artifacts.length > 0 && (
               <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-black/40 text-slate-200 tabular-nums">
                 {artifacts.length}
@@ -1232,7 +1232,7 @@ export default function App() {
                     setWorkspaceModalOpen(true)
                   }}
                   className="h-9 px-2.5 rounded-lg border border-white/[0.1] bg-[#14171F] hover:bg-[#1C202C] text-slate-200 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer shrink-0"
-                  title="Create or link a new workspace/project folder"
+                  title="Create a new project or link an existing folder on your PC"
                 >
                   <FolderPlus className="w-4 h-4 text-[#D97757]" />
                   <span className="hidden sm:inline">Project</span>
@@ -1247,12 +1247,12 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Section 1: Workspaces & Projects */}
+              {/* Section 1: Projects */}
               <div>
                 <div className="px-1.5 mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-400">
                   <div className="flex items-center gap-1.5">
                     <Folder className="w-3.5 h-3.5 text-[#D97757]" />
-                    <span>PROJECTS & WORKSPACES</span>
+                    <span>PROJECTS</span>
                   </div>
                   <span className="font-mono text-slate-500 tabular-nums">
                     {workspaces.length}
@@ -1261,7 +1261,7 @@ export default function App() {
 
                 {workspaces.length === 0 ? (
                   <div className="px-3 py-3 text-[11px] text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed mb-3">
-                    No projects yet. Click <strong className="text-slate-400">+ Project</strong> above to link a folder or start an isolated workspace.
+                    No projects yet. Click <strong className="text-slate-400">+ Project</strong> above to link an existing folder or create a new project.
                   </div>
                 ) : (
                   <div className="space-y-1 mb-3">
@@ -1307,7 +1307,7 @@ export default function App() {
                                   e.stopPropagation()
                                   startNewChat(ws.id)
                                 }}
-                                title="New chat in this workspace"
+                                title="New chat in this project"
                                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
                               >
                                 <Plus className="w-3 h-3" />
@@ -1320,7 +1320,7 @@ export default function App() {
                                   setWorkspaceModalMode('edit')
                                   setWorkspaceModalOpen(true)
                                 }}
-                                title="Edit workspace settings & instructions"
+                                title="Edit project settings & guidelines"
                                 className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
                               >
                                 <Settings className="w-3 h-3" />
@@ -1328,7 +1328,7 @@ export default function App() {
                               <button
                                 type="button"
                                 onClick={(e) => handleDeleteWorkspace(e, ws)}
-                                title={ws.is_external ? 'Unlink workspace (keeps files on disk)' : 'Delete workspace'}
+                                title={ws.is_external ? 'Unlink project (keeps files on disk)' : 'Delete project'}
                                 className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
                               >
                                 <Trash2 className="w-3 h-3" />
@@ -1500,12 +1500,121 @@ export default function App() {
               <div className="h-16 w-16 rounded-2xl bg-[#D97757]/15 border border-[#D97757]/40 flex items-center justify-center text-[#D97757] mb-3 animate-bounce shadow-lg shadow-[#D97757]/10">
                 <Upload className="w-8 h-8" />
               </div>
-              <div className="text-base font-semibold text-white">Drop files to add to workspace context</div>
+              <div className="text-base font-semibold text-white">Drop files to import into project context</div>
               <div className="text-xs text-slate-400 mt-1 max-w-sm leading-relaxed">
-                Spreadsheets (.xlsx, .csv), code files (.py, .js, .json), documents (.pdf, .docx), or images will be attached to your prompt and saved to your workspace.
+                Spreadsheets (.xlsx, .csv), code files (.py, .js, .json), documents (.pdf, .docx), or images will be attached to your prompt and saved to your project.
               </div>
             </div>
           )}
+
+          {/* PINNED CHAT MODE BAR */}
+          <div className="shrink-0 px-3 sm:px-6 py-2 border-b border-white/[0.07] bg-[#0C0E14] flex items-center justify-between gap-2 flex-wrap z-10">
+            {/* Mode Switcher: Chat | Orchestrator | Image */}
+            <div className="flex items-center p-0.5 rounded-lg bg-[#12151E] border border-white/[0.08] shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setImageGenMode(false)
+                  setOrchestratorMode(false)
+                }}
+                className={`h-7 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                  !orchestratorMode && !imageGenMode
+                    ? 'bg-sky-500/20 text-sky-200 border border-sky-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="💬 Chat Mode: Fast conversational intelligence for Q&A, brainstorming, and writing."
+              >
+                <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
+                <span>Chat</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setImageGenMode(false)
+                  setOrchestratorMode(true)
+                  if (typeof window !== 'undefined' && window.innerWidth >= 1280) {
+                    setFilePanelOpen(true)
+                  }
+                }}
+                className={`h-7 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                  orchestratorMode && !imageGenMode
+                    ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="⚡ Orchestrator Agent (Antigravity & Claude Code Mode): Autonomous pair programmer with direct local file access, Python sandbox, openpyxl, shell commands, and multi-step tool execution."
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>Orchestrator</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setOrchestratorMode(false)
+                  setImageGenMode(true)
+                }}
+                className={`h-7 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
+                  imageGenMode
+                    ? 'bg-purple-500/20 text-purple-200 border border-purple-500/40 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="🎨 Image Studio: Direct local neural diffusion rendering on your GPU."
+              >
+                <ImageIcon className="w-3.5 h-3.5 text-purple-400" />
+                <span>Image Studio</span>
+              </button>
+            </div>
+
+            {/* Contextual Mode Controls */}
+            <div className="flex items-center gap-2 shrink-0">
+              {orchestratorMode && !imageGenMode && (
+                <div className="flex items-center gap-2">
+                  <span className="hidden md:inline-flex items-center gap-1 text-[11px] font-mono text-amber-400/90">
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span>Antigravity Mode</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsTab('permissions')
+                      setSettingsModalOpen(true)
+                    }}
+                    className="h-7 px-2 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] font-mono text-slate-300 flex items-center gap-1 transition cursor-pointer"
+                    title="Click to view & configure agent permissions"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>
+                      {settings?.permission_mode === 'autonomous'
+                        ? 'Autonomous'
+                        : settings?.permission_mode === 'plan'
+                        ? 'Plan Only'
+                        : 'Ask on Write'}
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              {imageGenMode && (
+                <div className="relative shrink-0">
+                  <select
+                    aria-label="Choose Image Engine or Checkpoint"
+                    value={imageGenStyle}
+                    onChange={(e) => setImageGenStyle(e.target.value)}
+                    className="h-7 pl-2 pr-6 rounded-md bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-xs font-medium text-purple-200 appearance-none cursor-pointer transition max-w-[200px] truncate"
+                  >
+                    <option value="auto">🎯 Auto (Smart Style)</option>
+                    {imageModels.map((im) => (
+                      <option key={im.filename} value={im.filename}>
+                        {im.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-3 h-3 text-purple-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              )}
+            </div>
+          </div>
 
           <div
             ref={chatScrollContainerRef}
@@ -1759,17 +1868,6 @@ export default function App() {
                   </div>
                 )}
 
-                {orchestratorMode && !imageGenMode && (
-                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300 font-mono">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <Zap className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span className="truncate">Orchestrator Agent active: Python sandbox, openpyxl, file tools & web search</span>
-                    </div>
-                    <span className="hidden sm:inline text-[10px] text-amber-300/80 px-1.5 py-0.5 rounded bg-amber-500/20 shrink-0">
-                      Antigravity Mode
-                    </span>
-                  </div>
-                )}
 
                 {attachedFiles.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 px-1.5 py-1 bg-black/25 rounded-lg border border-white/[0.06]">
@@ -1884,14 +1982,14 @@ export default function App() {
                 />
 
                 <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-white/[0.06]">
-                  <div className="flex items-center gap-1.5 min-w-0 overflow-x-auto py-0.5">
-                    {/* Single Model Picker */}
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    {/* Model Picker */}
                     <div className="relative shrink-0">
                       <select
                         aria-label="Choose AI Model"
                         value={selectedModel}
                         onChange={(e) => handleSwitchModel(e.target.value)}
-                        className="h-9 pl-2.5 pr-7 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-xs font-mono text-slate-100 appearance-none cursor-pointer transition"
+                        className="h-8 pl-2 pr-6 rounded-lg bg-[#191D28] hover:bg-[#1F2432] border border-white/[0.1] text-xs font-mono text-slate-100 appearance-none cursor-pointer transition max-w-[170px] truncate"
                       >
                         {installedModels.map((m) => (
                           <option key={m.id} value={m.id}>
@@ -1899,108 +1997,16 @@ export default function App() {
                           </option>
                         ))}
                       </select>
-                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <ChevronDown className="w-3 h-3 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
 
-                    {/* SEGMENTED STUDIO MODE CONTROL: CHAT | ORCHESTRATOR | IMAGE */}
-                    <div className="flex items-center p-0.5 rounded-lg bg-[#11141D] border border-white/[0.08] shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImageGenMode(false)
-                          setOrchestratorMode(false)
-                        }}
-                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
-                          !orchestratorMode && !imageGenMode
-                            ? 'bg-sky-500/20 text-sky-200 border border-sky-500/40 shadow-sm'
-                            : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                        title="💬 Chat Mode: Fast conversational intelligence for Q&A, brainstorming, and writing."
-                      >
-                        <MessageSquare className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Chat</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setImageGenMode(false)
-                          setOrchestratorMode(true)
-                          if (typeof window !== 'undefined' && window.innerWidth >= 1280) {
-                            setFilePanelOpen(true)
-                          }
-                        }}
-                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
-                          orchestratorMode && !imageGenMode
-                            ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40 shadow-sm'
-                            : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                        title="⚡ Orchestrator Agent (Antigravity / Claude Code Mode): Autonomous pair programmer with direct local file access, Python sandbox, openpyxl Excel editing, web search, and multi-step tool execution."
-                      >
-                        <Zap className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Orchestrator</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOrchestratorMode(false)
-                          setImageGenMode(true)
-                        }}
-                        className={`h-8 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
-                          imageGenMode
-                            ? 'bg-purple-500/20 text-purple-200 border border-purple-500/40 shadow-sm'
-                            : 'text-slate-400 hover:text-slate-200'
-                        }`}
-                        title="🎨 Image Studio: Direct local neural diffusion rendering on your GPU."
-                      >
-                        <ImageIcon className="w-3.5 h-3.5 text-purple-400" />
-                        <span>Image</span>
-                      </button>
-                    </div>
-
-                    {/* Autonomy Mode Quick Pill */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSettingsTab('permissions')
-                        setSettingsModalOpen(true)
-                      }}
-                      className="h-8 px-2 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] font-mono text-slate-300 flex items-center gap-1 transition cursor-pointer shrink-0"
-                      title="Click to view & configure agent permissions"
-                    >
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="hidden sm:inline">
-                        {settings?.permission_mode === 'autonomous' ? 'Autonomous' : settings?.permission_mode === 'plan' ? 'Plan Only' : 'Ask on Write'}
-                      </span>
-                    </button>
-
-                    {/* Image Engine / Style Picker (Visible when Image Gen Mode is Active) */}
-                    {imageGenMode && (
-                      <div className="relative shrink-0">
-                        <select
-                          aria-label="Choose Image Engine or Checkpoint"
-                          value={imageGenStyle}
-                          onChange={(e) => setImageGenStyle(e.target.value)}
-                          className="h-9 pl-2.5 pr-7 rounded-lg bg-purple-950/40 hover:bg-purple-900/40 border border-purple-500/40 text-xs font-medium text-purple-200 appearance-none cursor-pointer transition max-w-[210px] truncate"
-                        >
-                          <option value="auto">🎯 Auto (Smart Style)</option>
-                          {imageModels.map((im) => (
-                            <option key={im.filename} value={im.filename}>
-                              {im.label}
-                            </option>
-                          ))}
-                        </select>
-                        <ChevronDown className="w-3.5 h-3.5 text-purple-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      </div>
-                    )}
-
+                    {/* Attach File Button */}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={isUploading}
                       aria-label="Attach file or image"
-                      className="h-9 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1.5 shrink-0 transition cursor-pointer"
+                      className="h-8 px-2.5 rounded-lg border border-white/[0.08] bg-[#161A24] hover:bg-[#1D2230] text-xs text-slate-300 flex items-center gap-1.5 shrink-0 transition cursor-pointer"
                       title="Attach spreadsheet, code, document, or image (or paste image with Ctrl+V)"
                     >
                       {isUploading ? (
@@ -2022,26 +2028,28 @@ export default function App() {
                       className="hidden"
                     />
 
+                    {/* Air-Gap / Web Toggle */}
                     <button
                       type="button"
                       onClick={() =>
                         handleUpdateSetting({ air_gap_mode: !isOfflineOnly })
                       }
-                      className={`h-9 px-2.5 rounded-lg border text-xs flex items-center gap-1 shrink-0 transition cursor-pointer ${
+                      className={`h-8 px-2.5 rounded-lg border text-xs flex items-center gap-1 shrink-0 transition cursor-pointer ${
                         isOfflineOnly
                           ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                           : 'border-sky-500/30 bg-sky-500/10 text-sky-300'
                       }`}
+                      title={isOfflineOnly ? "Air-Gap Mode Active: Internet tools blocked" : "Web Access Active: Brave / DuckDuckGo enabled"}
                     >
                       {isOfflineOnly ? (
                         <>
                           <Lock className="w-3.5 h-3.5" />
-                          <span>Offline</span>
+                          <span className="hidden sm:inline">Offline</span>
                         </>
                       ) : (
                         <>
                           <Globe className="w-3.5 h-3.5" />
-                          <span>Web On</span>
+                          <span className="hidden sm:inline">Web On</span>
                         </>
                       )}
                     </button>
@@ -2089,39 +2097,60 @@ export default function App() {
         {/* RIGHT PANEL: CREATED FILES PREVIEW, DOWNLOAD & DELETE */}
         {filePanelOpen && (
           <aside className="fixed lg:static inset-y-0 right-0 w-full sm:w-[440px] xl:w-[520px] shrink-0 border-l border-white/[0.075] bg-[#0D0F14] flex flex-col z-40">
-            <div className="px-4 py-3 border-b border-white/[0.075] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FolderOpen className="w-4 h-4 text-[#D97757]" />
-                <span className="text-xs font-semibold text-white">
-                  Workspace & Files
-                </span>
+            <div className="px-4 py-2.5 border-b border-white/[0.075] flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <FolderOpen className="w-4 h-4 text-[#D97757] shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-white truncate">
+                    {activeWorkspace ? activeWorkspace.name : 'Project & Files'}
+                  </div>
+                  <div className="text-[10px] font-mono text-slate-400 truncate">
+                    {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}
+                  </div>
+                </div>
               </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleOpenWorkspaceFolder}
+                  className="h-7 px-2 rounded-md border border-white/[0.08] bg-[#141822] hover:bg-[#1E2433] text-xs text-slate-300 hover:text-white flex items-center gap-1 transition cursor-pointer"
+                  title="Reveal project directory in Windows File Explorer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+                  <span className="hidden sm:inline">Explorer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFilePanelOpen(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                  title="Close Project Panel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Project Action Bar: + New File | Import Files | Refresh */}
+            <div className="px-3 py-1.5 border-b border-white/[0.06] bg-[#0E1118] flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
                   onClick={() => setNewFileModalOpen(true)}
-                  className="h-8 px-2 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
-                  title="Create new file in workspace"
+                  className="h-7 px-2.5 rounded-md bg-[#D97757]/15 hover:bg-[#D97757]/25 border border-[#D97757]/35 text-xs text-[#D97757] font-medium flex items-center gap-1 transition cursor-pointer"
+                  title="Create a new blank code, markdown, or text file in this project"
                 >
-                  <FilePlus className="w-3.5 h-3.5 text-[#D97757]" />
-                  <span className="hidden sm:inline">New File</span>
+                  <FilePlus className="w-3.5 h-3.5" />
+                  <span>+ New File</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={handleOpenWorkspaceFolder}
-                  className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
-                  title="Open Workspace folder on PC in File Explorer"
-                >
-                  <ExternalLink className="w-3.5 h-3.5 text-[#D97757]" />
-                  <span className="hidden sm:inline">Open Folder</span>
-                </button>
+
                 <button
                   type="button"
                   onClick={() => workspaceUploadRef.current?.click()}
-                  className="h-8 px-2 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
-                  title="Upload files to workspace"
+                  className="h-7 px-2.5 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-slate-300 hover:text-white font-medium flex items-center gap-1 transition cursor-pointer"
+                  title="Import existing files from your computer into this project"
                 >
-                  <Upload className="w-3.5 h-3.5 text-[#D97757]" />
+                  <Upload className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Import Files</span>
                 </button>
                 <input
                   ref={workspaceUploadRef}
@@ -2134,23 +2163,44 @@ export default function App() {
                   }}
                   className="hidden"
                 />
-                <button
-                  type="button"
-                  onClick={() => setFilePanelOpen(false)}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
-                  title="Close Workspace Panel"
-                >
-                  <X className="w-4 h-4" />
-                </button>
               </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  fetchWorkspaceFiles(activeWorkspaceId)
+                  fetchArtifacts(activeWorkspaceId)
+                }}
+                className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                title="Refresh project files list"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
             </div>
 
-            {/* Segmented Workspace View Switcher */}
+            {/* Segmented View Switcher: Project Files vs Previews */}
             <div className="px-3 py-2 border-b border-white/[0.06] bg-[#0B0D12] flex items-center gap-1">
               <button
                 type="button"
+                onClick={() => {
+                  setWorkspaceTab('workspace')
+                  fetchWorkspaceFiles(activeWorkspaceId)
+                }}
+                className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  workspaceTab === 'workspace'
+                    ? 'bg-[#181C26] text-white border border-white/[0.1]'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>Project Files</span>
+                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
+                  {workspaceFiles.length}
+                </span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setWorkspaceTab('artifacts')}
-                className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                className={`flex-1 py-1 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
                   workspaceTab === 'artifacts'
                     ? 'bg-[#181C26] text-white border border-white/[0.1]'
                     : 'text-slate-400 hover:text-slate-200'
@@ -2159,23 +2209,6 @@ export default function App() {
                 <span>Previews & Artifacts</span>
                 <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
                   {artifacts.length}
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setWorkspaceTab('workspace')
-                  fetchWorkspaceFiles(activeWorkspaceId)
-                }}
-                className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
-                  workspaceTab === 'workspace'
-                    ? 'bg-[#181C26] text-white border border-white/[0.1]'
-                    : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <span>Workspace Files</span>
-                <span className="font-mono text-[10px] px-1 py-0.2 rounded bg-black/40 text-slate-300 tabular-nums">
-                  {workspaceFiles.length}
                 </span>
               </button>
             </div>
@@ -2193,26 +2226,6 @@ export default function App() {
                 </div>
               ) : (
                 <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E] p-3 overflow-y-auto">
-                  <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-2 pb-1.5 border-b border-white/[0.05]">
-                    <span className="truncate">Root: {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}</span>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setNewFileModalOpen(true)}
-                        className="text-xs text-[#D97757] hover:underline flex items-center gap-1 cursor-pointer font-medium"
-                      >
-                        <FilePlus className="w-3 h-3" />
-                        <span>+ File</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => fetchWorkspaceFiles(activeWorkspaceId)}
-                        className="text-xs text-slate-400 hover:text-white cursor-pointer"
-                      >
-                        Refresh
-                      </button>
-                    </div>
-                  </div>
                   {workspaceFiles.length === 0 ? (
                     <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
                       <Folder className="w-8 h-8 mb-2 text-slate-600" />
@@ -2486,7 +2499,7 @@ export default function App() {
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FilePlus className="w-4 h-4 text-[#D97757]" />
-                <h3 className="text-sm font-semibold text-white">New Workspace File</h3>
+                <h3 className="text-sm font-semibold text-white">New Project File</h3>
               </div>
               <button
                 type="button"

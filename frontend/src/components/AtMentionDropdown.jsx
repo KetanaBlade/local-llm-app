@@ -24,7 +24,7 @@ export default function AtMentionDropdown({ files, query, selectedIndex, onSelec
   return (
     <div className="absolute bottom-full mb-1.5 left-2 w-72 sm:w-80 max-h-56 overflow-y-auto rounded-xl bg-[#121622] border border-white/[0.12] shadow-2xl z-50 p-1.5 space-y-0.5">
       <div className="px-2 py-1 text-[10px] font-mono text-slate-400 flex items-center justify-between border-b border-white/[0.06] mb-1">
-        <span>ATTACH CONTEXT FILE (@)</span>
+        <span>ATTACH PROJECT FILE (@)</span>
         <span className="text-slate-500">↑↓ to navigate, Enter to select</span>
       </div>
       {filtered.map((file, idx) => (

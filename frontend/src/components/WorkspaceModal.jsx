@@ -98,7 +98,7 @@ export default function WorkspaceModal({
             </div>
             <div>
               <h2 className="text-sm font-semibold text-white">
-                {mode === 'create' ? 'Create New Workspace' : `Edit "${workspace?.name}"`}
+                {mode === 'create' ? 'Create New Project' : `Edit "${workspace?.name}"`}
               </h2>
               <p className="text-xs text-slate-400">
                 {mode === 'create'
@@ -129,7 +129,7 @@ export default function WorkspaceModal({
           {mode === 'create' && (
             <div>
               <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                Workspace Storage Location
+                Project Storage Location
               </label>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -168,16 +168,16 @@ export default function WorkspaceModal({
             </div>
           )}
 
-          {/* Workspace Name */}
+          {/* Project Name */}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1">
-              Project / Workspace Name
+              Project Name
             </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. My Next.js Web App, 2026 Taxes, Robotics Pilot..."
+              placeholder="e.g. Weather Dashboard, 2026 Budget, Robotics Pilot..."
               className="w-full h-9 px-3 rounded-lg bg-[#0C0E14] border border-white/[0.1] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#D97757]"
               required
             />
@@ -246,7 +246,7 @@ export default function WorkspaceModal({
               className="w-full p-2.5 rounded-lg bg-[#0C0E14] border border-white/[0.1] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#D97757] resize-y"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              These instructions are automatically injected into the agent system prompt for every chat in this workspace. If an <code className="text-slate-300">AI_GUIDELINES.md</code> file exists in the workspace root, its contents are also automatically read.
+              These instructions are automatically injected into the agent system prompt for every chat in this project. If an <code className="text-slate-300">AI_GUIDELINES.md</code> file exists in the project root, its contents are also automatically read.
             </p>
           </div>
 

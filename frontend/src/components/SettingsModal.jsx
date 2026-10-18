@@ -183,7 +183,7 @@ export default function SettingsModal({
                   External Filesystem Boundary Policy
                 </label>
                 <p className="text-xs text-slate-400 mb-2">
-                  What happens when an agent tool attempts to modify files located outside the active workspace directory:
+                  What happens when an agent tool attempts to modify files located outside the active project directory:
                 </p>
                 <select
                   aria-label="External Path Policy"
@@ -191,8 +191,8 @@ export default function SettingsModal({
                   onChange={(e) => onUpdateSetting({ external_path_policy: e.target.value })}
                   className="w-full h-9 px-3 rounded-lg bg-[#0C0E14] border border-white/[0.1] text-xs text-white cursor-pointer"
                 >
-                  <option value="ask">⚠️ Prompt before modifying files outside workspace (Recommended)</option>
-                  <option value="deny">🚫 Strictly block all file modifications outside workspace</option>
+                  <option value="ask">⚠️ Prompt before modifying files outside active project (Recommended)</option>
+                  <option value="deny">🚫 Strictly block all file modifications outside active project</option>
                   <option value="allow">⚡ Allow external modifications according to standard tool permissions</option>
                 </select>
               </div>
