@@ -75,6 +75,7 @@ from .tools import (
     WORKSPACE_DIR,
     confine_to_workspace,
     create_file_backup,
+    extract_excel_preview,
     list_available_sd_models,
     resolve_safe_path,
     tool_revert_file_backup,
@@ -790,7 +791,21 @@ async def api_serve_artifact_file(filename: str, download: bool = False):
     safe_name = Path(filename).name
     filepath = ARTIFACTS_DIR / safe_name
     if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Artifact file not found")
+        # Fallback check across uploads, workspace root, or any workspace folder
+        candidate = None
+        for p in [WORKSPACE_DIR / "uploads" / safe_name, WORKSPACE_DIR / safe_name]:
+            if p.exists() and p.is_file():
+                candidate = p
+                break
+        if not candidate and WORKSPACE_DIR.exists():
+            for p in WORKSPACE_DIR.rglob(safe_name):
+                if p.is_file():
+                    candidate = p
+                    break
+        if candidate:
+            filepath = candidate
+        else:
+            raise HTTPException(status_code=404, detail="Artifact file not found")
 
     if filepath.suffix.lower() in (".html", ".htm") and not download:
         return HTMLResponse(filepath.read_text(encoding="utf-8", errors="ignore"))
@@ -801,6 +816,45 @@ async def api_serve_artifact_file(filename: str, download: bool = False):
         filename=safe_name,
         content_disposition_type=disposition,
     )
+
+
+@app.get("/api/workspace/raw-file")
+async def api_serve_workspace_raw_file(path: str, workspace_id: Optional[str] = None, download: bool = False):
+    """
+    Directly streams any workspace file (image, PDF, spreadsheet, document, code)
+    with accurate MIME types and Content-Disposition.
+    """
+    try:
+        base_dir = await _resolve_workspace_base(workspace_id)
+        safe_rel = path.replace("\\", "/").strip().lstrip("/")
+        target = resolve_safe_path(safe_rel, allow_outside_workspace=True, base_dir=base_dir)
+        if not target.exists() or not target.is_file():
+            # Fallback: check in ARTIFACTS_DIR or search workspace
+            safe_name = Path(safe_rel).name
+            if (ARTIFACTS_DIR / safe_name).exists():
+                target = ARTIFACTS_DIR / safe_name
+            elif WORKSPACE_DIR.exists():
+                for p in WORKSPACE_DIR.rglob(safe_name):
+                    if p.is_file():
+                        target = p
+                        break
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if target.suffix.lower() in (".html", ".htm") and not download:
+            return HTMLResponse(target.read_text(encoding="utf-8", errors="ignore"))
+
+        disposition = "attachment" if download or target.suffix.lower() in (".xlsx", ".docx") else "inline"
+        return FileResponse(
+            target,
+            filename=target.name,
+            content_disposition_type=disposition,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 
 @app.post("/api/workspace/upload")
@@ -845,13 +899,11 @@ async def api_upload_workspace(
             category = "archive"
 
         preview_data = {}
-        if ext in (".xlsx", ".xlsm"):
+        if ext in (".xlsx", ".xlsm", ".xls", ".csv"):
             try:
-                wb = openpyxl.load_workbook(dest_path, read_only=True)
-                preview_data["sheets"] = wb.sheetnames
-                wb.close()
+                preview_data = extract_excel_preview(dest_path)
             except Exception:
-                pass
+                preview_data = {}
 
         art = await register_artifact(
             title=raw_name,
@@ -943,30 +995,44 @@ async def api_get_workspace_file_content(path: str, workspace_id: Optional[str] 
 
         ext = target.suffix.lower()
         stat = target.stat()
+        raw_url = f"/api/workspace/raw-file?path={safe_rel}"
+        if workspace_id:
+            raw_url += f"&workspace_id={workspace_id}"
 
         if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif", ".ico", ".svg"):
             return {
                 "type": "image",
                 "name": target.name,
                 "relative_path": safe_rel,
-                "url": f"/api/artifacts/file/{target.name}",
+                "url": raw_url,
                 "size_bytes": stat.st_size,
             }
         elif ext in (".xlsx", ".xls", ".csv"):
+            preview_data = extract_excel_preview(target)
             return {
                 "type": "spreadsheet",
                 "name": target.name,
                 "relative_path": safe_rel,
-                "url": f"/api/artifacts/file/{target.name}",
+                "url": raw_url,
                 "size_bytes": stat.st_size,
+                "preview_data": preview_data,
             }
         elif ext in (".pdf", ".docx"):
             return {
                 "type": "document",
                 "name": target.name,
                 "relative_path": safe_rel,
-                "url": f"/api/artifacts/file/{target.name}",
+                "url": raw_url,
                 "size_bytes": stat.st_size,
+            }
+        elif ext in (".html", ".htm"):
+            return {
+                "type": "webapp",
+                "name": target.name,
+                "relative_path": safe_rel,
+                "url": raw_url,
+                "size_bytes": stat.st_size,
+                "content": target.read_text(encoding="utf-8", errors="ignore"),
             }
 
         # Text / code file reading
@@ -984,6 +1050,7 @@ async def api_get_workspace_file_content(path: str, workspace_id: Optional[str] 
             "extension": ext.lstrip("."),
             "size_bytes": stat.st_size,
             "content": content,
+            "url": raw_url,
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

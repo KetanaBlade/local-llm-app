@@ -333,8 +333,22 @@ def resolve_sd_model_and_prompts(
 
 
 def extract_excel_preview(filepath: Path) -> Dict[str, Any]:
-    """Read an .xlsx file to extract both formula strings and display structure for live UI preview."""
+    """Read an .xlsx or .csv file to extract structure and values for live UI preview."""
     try:
+        ext = filepath.suffix.lower()
+        if ext == ".csv":
+            import csv
+            with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                reader = list(csv.reader(f))[:50]
+            max_cols = min(max((len(r) for r in reader), default=1), 20)
+            return {
+                "sheets": [{
+                    "name": filepath.stem,
+                    "columns": [get_column_letter(c) for c in range(1, max_cols + 1)],
+                    "rows": [[str(cell) if cell is not None else "" for cell in r[:max_cols]] for r in reader]
+                }]
+            }
+
         wb = openpyxl.load_workbook(filepath, data_only=False)
         sheets_preview = []
         for sheet_name in wb.sheetnames[:5]:
