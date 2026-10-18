@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import csv
 from datetime import datetime
+import difflib
 import html
 import json
 import math
@@ -90,12 +91,16 @@ RESTRICTED_SYSTEM_DIRS = [
 ]
 
 
-def resolve_safe_path(candidate: Path | str, allow_outside_workspace: bool = True) -> Path:
+def resolve_safe_path(
+    candidate: Path | str,
+    allow_outside_workspace: bool = True,
+    base_dir: Optional[Path] = None,
+) -> Path:
     """
     Resolve and validate file/directory path.
     - Resolves user home `~`
     - Blocks NUL bytes, newlines, and illegal escape control characters
-    - If allow_outside_workspace is False, confines strictly to WORKSPACE_DIR
+    - If allow_outside_workspace is False, confines strictly to base_dir (defaults to WORKSPACE_DIR)
     - If allow_outside_workspace is True, allows user documents, projects, and drives while blocking Windows system directories
     """
     raw_str = str(candidate).strip()
@@ -104,22 +109,23 @@ def resolve_safe_path(candidate: Path | str, allow_outside_workspace: bool = Tru
     if "\0" in raw_str or "\n" in raw_str or "\r" in raw_str:
         raise ValueError("Invalid path: illegal control characters detected")
 
+    active_base = (base_dir or WORKSPACE_DIR).resolve()
+
     if raw_str.startswith("~"):
         p = Path(raw_str).expanduser()
     else:
         p = Path(raw_str)
 
     if not p.is_absolute():
-        p = (WORKSPACE_DIR / p).resolve()
+        p = (active_base / p).resolve()
     else:
         p = p.resolve()
 
     if not allow_outside_workspace:
-        base_real = WORKSPACE_DIR.resolve()
         try:
-            common = Path(os.path.commonpath([str(base_real), str(p)])).resolve()
-            if common != base_real:
-                raise ValueError(f"Path escape blocked: '{p}' is outside allowed workspace '{base_real}'")
+            common = Path(os.path.commonpath([str(active_base), str(p)])).resolve()
+            if common != active_base:
+                raise ValueError(f"Path escape blocked: '{p}' is outside allowed workspace '{active_base}'")
         except Exception as exc:
             raise ValueError(f"Access denied: {exc}")
 
@@ -1462,13 +1468,15 @@ async def tool_edit_file_content(
     filepath: str,
     target_content: str,
     replacement_content: str,
+    base_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Antigravity-Style Surgical Text / Code File Editor.
     Replaces an exact block of target content with replacement content, creating a .bak copy first.
+    Calculates unified diff lines for interactive user preview and 1-click backup rollback.
     """
     try:
-        target = resolve_safe_path(filepath, allow_outside_workspace=True)
+        target = resolve_safe_path(filepath, allow_outside_workspace=True, base_dir=base_dir)
     except Exception as exc:
         return {"status": "error", "summary": str(exc)}
 
@@ -1493,12 +1501,169 @@ async def tool_edit_file_content(
     new_text = raw_text.replace(target_content, replacement_content, 1)
     target.write_text(new_text, encoding="utf-8")
 
+    diff_lines = list(difflib.unified_diff(
+        raw_text.splitlines(keepends=True),
+        new_text.splitlines(keepends=True),
+        fromfile=f"a/{target.name}",
+        tofile=f"b/{target.name}",
+        n=3,
+    ))
+    diff_str = "".join(diff_lines)
+
     return {
         "status": "success",
         "summary": f"Successfully updated '{target.name}'.",
         "backup_path": str(bak_path) if bak_path else None,
+        "backup_filename": bak_path.name if bak_path else None,
+        "filepath": str(target),
+        "filename": target.name,
+        "diff": diff_str,
         "detail": f"File edited successfully. Backup saved at: {bak_path.name if bak_path else 'none'}",
     }
+
+
+def tool_revert_file_backup(backup_filepath: str, base_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Restores an edited file from its .bak_* backup.
+    """
+    try:
+        bak_target = resolve_safe_path(backup_filepath, allow_outside_workspace=True, base_dir=base_dir)
+        if not bak_target.exists() or not bak_target.is_file():
+            return {"status": "error", "summary": f"Backup file not found: '{backup_filepath}'"}
+
+        name = bak_target.name
+        if ".bak_" not in name:
+            return {"status": "error", "summary": f"Not a valid backup file (.bak_* required): '{name}'"}
+
+        orig_name = name.split(".bak_")[0]
+        orig_target = bak_target.with_name(orig_name)
+
+        shutil.copy2(bak_target, orig_target)
+        return {
+            "status": "success",
+            "summary": f"Successfully restored '{orig_name}' from backup.",
+            "restored_file": str(orig_target),
+            "backup_file": str(bak_target),
+        }
+    except Exception as exc:
+        return {"status": "error", "summary": f"Failed to restore backup: {exc}"}
+
+
+async def tool_run_shell_command(
+    command: str,
+    cwd: Optional[str] = None,
+    timeout_seconds: float = 60.0,
+    base_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Antigravity/Cursor-Style Shell & Terminal Command Runner.
+    Runs commands in the active workspace directory.
+    Guards against destructive system commands.
+    """
+    clean_cmd = command.strip()
+    if not clean_cmd:
+        return {"status": "error", "summary": "Command cannot be empty", "stdout": "", "stderr": "Empty command"}
+
+    lower_cmd = clean_cmd.lower()
+    blocked_patterns = [
+        r"\bformat\s+[a-z]:",
+        r"\brmdir\s+/[sq]\s+[a-z]:\\",
+        r"\bdel\s+/[sqfa]\s+[a-z]:\\windows",
+        r"\bdiskpart\b",
+        r"\bmkfs\b",
+        r"\bdd\s+if=",
+        r"\brm\s+-rf\s+/\b",
+    ]
+    for pat in blocked_patterns:
+        if re.search(pat, lower_cmd):
+            return {
+                "status": "error",
+                "summary": "Command blocked by safety guard: potentially destructive system operation detected.",
+                "stdout": "",
+                "stderr": "Command blocked for system safety.",
+            }
+
+    resolved_cwd = (base_dir or WORKSPACE_DIR).resolve()
+    if cwd and cwd.strip():
+        try:
+            target_cwd = resolve_safe_path(cwd, allow_outside_workspace=True, base_dir=base_dir)
+            if target_cwd.exists() and target_cwd.is_dir():
+                resolved_cwd = target_cwd
+        except Exception:
+            pass
+
+    t0 = time.time()
+    try:
+        if platform.system() == "Windows":
+            proc = await asyncio.create_subprocess_exec(
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                clean_cmd,
+                cwd=str(resolved_cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                clean_cmd,
+                cwd=str(resolved_cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+            stdout = stdout_b.decode("utf-8", errors="replace")
+            stderr = stderr_b.decode("utf-8", errors="replace")
+            exit_code = proc.returncode or 0
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return {
+                "status": "error",
+                "summary": f"Command timed out after {timeout_seconds} seconds.",
+                "stdout": "",
+                "stderr": f"Execution timed out ({timeout_seconds}s).",
+                "duration_ms": int((time.time() - t0) * 1000),
+                "cwd": str(resolved_cwd),
+            }
+
+        duration_ms = int((time.time() - t0) * 1000)
+        status = "success" if exit_code == 0 else "error"
+        summary = f"Command exited with code {exit_code} ({duration_ms}ms)"
+        if exit_code == 0 and stdout:
+            first_line = stdout.strip().splitlines()[0][:60]
+            summary = f"Shell command succeeded: {first_line}"
+
+        max_chars = 25000
+        truncated_stdout = stdout if len(stdout) <= max_chars else stdout[:max_chars] + f"\n... [Output truncated: {len(stdout) - max_chars} characters omitted] ..."
+        truncated_stderr = stderr if len(stderr) <= max_chars else stderr[:max_chars] + f"\n... [Stderr truncated: {len(stderr) - max_chars} characters omitted] ..."
+
+        return {
+            "status": status,
+            "exit_code": exit_code,
+            "summary": summary,
+            "stdout": truncated_stdout,
+            "stderr": truncated_stderr,
+            "duration_ms": duration_ms,
+            "cwd": str(resolved_cwd),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "exit_code": -1,
+            "summary": f"Failed to execute command: {exc}",
+            "stdout": "",
+            "stderr": str(exc),
+            "duration_ms": int((time.time() - t0) * 1000),
+            "cwd": str(resolved_cwd),
+        }
 
 
 def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
@@ -1530,6 +1695,31 @@ def get_tool_schemas(allow_web_search: bool = False) -> List[Dict[str, Any]]:
                         },
                     },
                     "required": ["script", "description"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_shell_command",
+                "description": (
+                    "Execute a terminal shell command (PowerShell on Windows, Bash on Linux/Mac) "
+                    "in the active workspace directory. Use to run tests, build tools, inspect git status, "
+                    "compile code, or run CLI utilities."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command line to execute (e.g. 'npm test', 'git status', 'python -m pytest', 'dir').",
+                        },
+                        "cwd": {
+                            "type": "string",
+                            "description": "Optional subdirectory or working folder path (defaults to active workspace).",
+                        },
+                    },
+                    "required": ["command"],
                 },
             },
         },

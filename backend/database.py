@@ -16,6 +16,7 @@ Deletion Policy:
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from pathlib import Path
@@ -25,7 +26,24 @@ import aiosqlite
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = ROOT_DIR / "local_ai_studio.db"
-ARTIFACTS_DIR = ROOT_DIR / "workspace" / "artifacts"
+WORKSPACE_DIR = ROOT_DIR / "workspace"
+ARTIFACTS_DIR = WORKSPACE_DIR / "artifacts"
+PROJECTS_DIR = WORKSPACE_DIR / "projects"
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_TOOL_PERMISSIONS: Dict[str, str] = {
+    "read_file": "allow",
+    "list_directory": "allow",
+    "search_web": "allow",
+    "edit_file_content": "ask",
+    "execute_python": "ask",
+    "run_shell_command": "ask",
+    "create_excel_spreadsheet": "ask",
+    "create_document": "ask",
+    "build_interactive_app": "ask",
+    "generate_visual_media": "ask",
+}
 
 
 async def init_db() -> None:
@@ -43,20 +61,38 @@ async def init_db() -> None:
         )
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                is_external INTEGER NOT NULL DEFAULT 0,
+                instructions TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS conversations (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL,
                 model TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'chat',
                 context TEXT NOT NULL DEFAULT '',
+                workspace_id TEXT DEFAULT NULL,
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
             """
         )
-        # Ensure `context` column exists on older databases
+        # Ensure `context` and `workspace_id` columns exist on older databases
         try:
             await db.execute("ALTER TABLE conversations ADD COLUMN context TEXT NOT NULL DEFAULT ''")
+        except Exception:
+            pass
+        try:
+            await db.execute("ALTER TABLE conversations ADD COLUMN workspace_id TEXT DEFAULT NULL")
         except Exception:
             pass
 
@@ -82,6 +118,7 @@ async def init_db() -> None:
             CREATE TABLE IF NOT EXISTS artifacts (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT,
+                workspace_id TEXT DEFAULT NULL,
                 title TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 category TEXT NOT NULL,
@@ -92,6 +129,11 @@ async def init_db() -> None:
             )
             """
         )
+        try:
+            await db.execute("ALTER TABLE artifacts ADD COLUMN workspace_id TEXT DEFAULT NULL")
+        except Exception:
+            pass
+
         defaults = {
             "air_gap_mode": "true",
             "hardware_profile_override": "auto",
@@ -100,6 +142,9 @@ async def init_db() -> None:
             "auto_vram_handoff": "true",
             "gaming_mode": "false",
             "brave_search_api_key": "",
+            "permission_mode": "ask",
+            "tool_permissions": json.dumps(DEFAULT_TOOL_PERMISSIONS),
+            "external_path_policy": "ask",
         }
         for k, v in defaults.items():
             await db.execute(
@@ -115,6 +160,12 @@ async def get_settings() -> Dict[str, Any]:
         cursor = await db.execute("SELECT key, value FROM settings")
         rows = await cursor.fetchall()
         raw = {r["key"]: r["value"] for r in rows}
+        raw_perms = raw.get("tool_permissions")
+        try:
+            parsed_perms = json.loads(raw_perms) if raw_perms else DEFAULT_TOOL_PERMISSIONS
+        except Exception:
+            parsed_perms = DEFAULT_TOOL_PERMISSIONS
+
         return {
             "air_gap_mode": raw.get("air_gap_mode", "true") == "true",
             "hardware_profile_override": raw.get("hardware_profile_override", "auto"),
@@ -123,13 +174,19 @@ async def get_settings() -> Dict[str, Any]:
             "auto_vram_handoff": raw.get("auto_vram_handoff", "true") == "true",
             "gaming_mode": raw.get("gaming_mode", "false") == "true",
             "brave_search_api_key": raw.get("brave_search_api_key", ""),
+            "permission_mode": raw.get("permission_mode", "ask"),
+            "tool_permissions": parsed_perms,
+            "external_path_policy": raw.get("external_path_policy", "ask"),
         }
 
 
 async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     async with aiosqlite.connect(DB_PATH) as db:
         for k, v in updates.items():
-            val_str = "true" if v is True else ("false" if v is False else str(v))
+            if k == "tool_permissions" and isinstance(v, dict):
+                val_str = json.dumps(v)
+            else:
+                val_str = "true" if v is True else ("false" if v is False else str(v))
             await db.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (k, val_str),
@@ -138,18 +195,154 @@ async def update_settings(updates: Dict[str, Any]) -> Dict[str, Any]:
     return await get_settings()
 
 
+def _slugify_workspace_name(name: str) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip().lower()).strip("_")
+    return s[:40] or f"project_{int(time.time())}"
+
+
+async def create_workspace(
+    name: str,
+    path: Optional[str] = None,
+    is_external: bool = False,
+    instructions: str = "",
+) -> Dict[str, Any]:
+    wid = str(uuid.uuid4())
+    now = time.time()
+    clean_name = name.strip() or "Untitled Workspace"
+
+    if path and path.strip():
+        resolved_path = str(Path(path.strip()).resolve())
+        is_ext = 1 if is_external else 0
+    else:
+        slug = _slugify_workspace_name(clean_name)
+        folder = PROJECTS_DIR / slug
+        folder.mkdir(parents=True, exist_ok=True)
+        resolved_path = str(folder.resolve())
+        is_ext = 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO workspaces (id, name, path, is_external, instructions, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (wid, clean_name, resolved_path, is_ext, instructions.strip(), now, now),
+        )
+        await db.commit()
+
+    return {
+        "id": wid,
+        "name": clean_name,
+        "path": resolved_path,
+        "is_external": bool(is_ext),
+        "instructions": instructions.strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def list_workspaces() -> List[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT w.id, w.name, w.path, w.is_external, w.instructions, w.created_at, w.updated_at,
+                   COUNT(c.id) as conversation_count
+            FROM workspaces w
+            LEFT JOIN conversations c ON w.id = c.workspace_id
+            GROUP BY w.id
+            ORDER BY w.updated_at DESC
+            """
+        )
+        rows = await cursor.fetchall()
+        workspaces = []
+        for r in rows:
+            d = dict(r)
+            d["is_external"] = bool(d["is_external"])
+            workspaces.append(d)
+        return workspaces
+
+
+async def get_workspace(workspace_id: str) -> Optional[Dict[str, Any]]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, name, path, is_external, instructions, created_at, updated_at FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["is_external"] = bool(d["is_external"])
+        return d
+
+
+async def update_workspace(workspace_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ws = await get_workspace(workspace_id)
+    if not ws:
+        return None
+    now = time.time()
+    name = updates.get("name", ws["name"])
+    path = updates.get("path", ws["path"])
+    instructions = updates.get("instructions", ws["instructions"])
+    is_external = 1 if updates.get("is_external", ws["is_external"]) else 0
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE workspaces
+            SET name = ?, path = ?, is_external = ?, instructions = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (name, path, is_external, instructions, now, workspace_id),
+        )
+        await db.commit()
+    return await get_workspace(workspace_id)
+
+
+async def delete_workspace(workspace_id: str, delete_files: bool = False) -> Dict[str, Any]:
+    ws = await get_workspace(workspace_id)
+    if not ws:
+        return {"status": "not_found", "id": workspace_id}
+
+    if delete_files and not ws["is_external"]:
+        p = Path(ws["path"])
+        if PROJECTS_DIR.resolve() in p.resolve().parents and p.exists() and p.is_dir():
+            try:
+                import shutil
+                shutil.rmtree(p, ignore_errors=True)
+            except Exception:
+                pass
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE conversations SET workspace_id = NULL WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        await db.execute(
+            "UPDATE artifacts SET workspace_id = NULL WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        await db.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        await db.commit()
+
+    return {"status": "deleted", "id": workspace_id}
+
+
 async def create_conversation(
     title: str,
     model: str,
     mode: str = "chat",
     context: str = "",
+    workspace_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     cid = str(uuid.uuid4())
     now = time.time()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO conversations (id, title, model, mode, context, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (cid, title, model, mode, context, now, now),
+            "INSERT INTO conversations (id, title, model, mode, context, workspace_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (cid, title, model, mode, context, workspace_id, now, now),
         )
         await db.commit()
     return {
@@ -158,6 +351,7 @@ async def create_conversation(
         "model": model,
         "mode": mode,
         "context": context,
+        "workspace_id": workspace_id,
         "created_at": now,
         "updated_at": now,
     }
@@ -185,7 +379,7 @@ async def list_conversations() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, context, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
+            "SELECT id, title, model, mode, context, workspace_id, created_at, updated_at FROM conversations ORDER BY updated_at DESC"
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -195,7 +389,7 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, title, model, mode, context, created_at, updated_at FROM conversations WHERE id = ?",
+            "SELECT id, title, model, mode, context, workspace_id, created_at, updated_at FROM conversations WHERE id = ?",
             (conversation_id,),
         )
         conv = await cursor.fetchone()
@@ -235,6 +429,41 @@ async def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
         res = dict(conv)
         res["messages"] = messages
         return res
+
+
+async def truncate_conversation_from_message(conversation_id: str, message_id: str) -> Dict[str, Any]:
+    """
+    Truncates conversation messages starting from `message_id` onward.
+    Allows user prompt editing/resubmission and assistant regeneration.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, created_at FROM messages WHERE id = ? AND conversation_id = ?",
+            (message_id, conversation_id),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {"status": "not_found", "message_id": message_id}
+
+        target_time = row["created_at"]
+        del_cursor = await db.execute(
+            "SELECT id FROM messages WHERE conversation_id = ? AND created_at >= ?",
+            (conversation_id, target_time),
+        )
+        del_rows = await del_cursor.fetchall()
+        del_ids = [r["id"] for r in del_rows]
+
+        await db.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND created_at >= ?",
+            (conversation_id, target_time),
+        )
+        await db.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (time.time(), conversation_id),
+        )
+        await db.commit()
+    return {"status": "truncated", "deleted_message_ids": del_ids, "conversation_id": conversation_id}
 
 
 async def delete_conversation(conversation_id: str) -> Dict[str, Any]:

@@ -38,6 +38,7 @@ from typing import List
 
 from .agent import (
     OLLAMA_BASE,
+    PENDING_TOOL_APPROVALS,
     ensure_ollama_running,
     execute_tool_call,
     flush_ollama_vram,
@@ -49,21 +50,36 @@ from .database import (
     DB_PATH,
     add_message,
     create_conversation,
+    create_workspace,
     delete_artifact,
     delete_conversation,
+    delete_workspace,
     get_conversation,
     get_settings,
+    get_workspace,
     init_db,
     list_artifacts,
     list_conversations,
+    list_workspaces,
     register_artifact,
+    truncate_conversation_from_message,
     update_conversation_context,
     update_conversation_model,
     update_conversation_title,
     update_settings,
+    update_workspace,
 )
 from .hardware import build_hardware_profile
-from .tools import ARTIFACTS_DIR, WORKSPACE_DIR, confine_to_workspace, list_available_sd_models, SD_MODEL_DIR
+from .tools import (
+    ARTIFACTS_DIR,
+    WORKSPACE_DIR,
+    confine_to_workspace,
+    create_file_backup,
+    list_available_sd_models,
+    resolve_safe_path,
+    tool_revert_file_backup,
+    SD_MODEL_DIR,
+)
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = ROOT_DIR / "frontend" / "dist"
@@ -133,6 +149,7 @@ class ChatRequest(BaseModel):
     context: Optional[str] = None
     image_style: Optional[str] = "auto"
     attached_files: Optional[List[Dict[str, Any]]] = None
+    workspace_id: Optional[str] = None
 
 
 class ContextUpdateRequest(BaseModel):
@@ -169,12 +186,51 @@ class SettingsUpdateRequest(BaseModel):
     auto_vram_handoff: Optional[bool] = None
     gaming_mode: Optional[bool] = None
     brave_search_api_key: Optional[str] = None
+    permission_mode: Optional[str] = None
+    tool_permissions: Optional[Dict[str, str]] = None
+    external_path_policy: Optional[str] = None
 
 
 class DirectToolRequest(BaseModel):
     tool_name: str
     arguments: Dict[str, Any]
     conversation_id: Optional[str] = None
+
+
+class WorkspaceCreateRequest(BaseModel):
+    name: str
+    path: Optional[str] = None
+    is_external: bool = False
+    instructions: Optional[str] = ""
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    path: Optional[str] = None
+    instructions: Optional[str] = None
+    is_external: Optional[bool] = None
+
+
+class ToolApprovalRequest(BaseModel):
+    approval_id: str
+    decision: str  # "allow_once", "always_allow", "deny"
+    tool_name: Optional[str] = None
+    feedback: Optional[str] = None
+
+
+class TruncateConversationRequest(BaseModel):
+    message_id: str
+
+
+class FileSaveRequest(BaseModel):
+    path: str
+    content: str
+    workspace_id: Optional[str] = None
+
+
+class RevertBackupRequest(BaseModel):
+    backup_path: str
+    workspace_id: Optional[str] = None
 
 
 @app.get("/api/system/status")
@@ -405,6 +461,151 @@ async def api_system_shutdown():
     }
 
 
+async def _resolve_workspace_base(workspace_id: Optional[str] = None) -> Path:
+    if workspace_id:
+        ws = await get_workspace(workspace_id)
+        if ws and ws.get("path"):
+            try:
+                p = Path(ws["path"]).resolve()
+                if p.exists() and p.is_dir():
+                    return p
+            except Exception:
+                pass
+    return WORKSPACE_DIR.resolve()
+
+
+@app.get("/api/workspaces")
+async def api_get_workspaces():
+    return {"workspaces": await list_workspaces()}
+
+
+@app.post("/api/workspaces")
+async def api_create_workspace(req: WorkspaceCreateRequest):
+    ws = await create_workspace(
+        name=req.name,
+        path=req.path,
+        is_external=req.is_external,
+        instructions=req.instructions or "",
+    )
+    return ws
+
+
+@app.post("/api/workspaces/pick-folder")
+async def api_pick_workspace_folder():
+    """
+    Spawns the native Windows/OS folder picker dialog on the host PC so the user can
+    select any folder on their computer with a single click.
+    """
+    if platform.system() == "Windows":
+        try:
+            ps_cmd = (
+                "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; "
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$f.Description = 'Select project folder to link with Local AI Studio'; "
+                "$f.ShowNewFolderButton = $true; "
+                "if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                ps_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, _ = await proc.communicate()
+            selected = stdout_b.decode("utf-8", errors="ignore").strip()
+            if selected and Path(selected).exists():
+                p = Path(selected).resolve()
+                return {"status": "selected", "path": str(p), "name": p.name}
+            return {"status": "cancelled", "path": None}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+    return {"status": "unsupported", "path": None}
+
+
+@app.patch("/api/workspaces/{workspace_id}")
+async def api_update_workspace(workspace_id: str, req: WorkspaceUpdateRequest):
+    updates = {}
+    if req.name is not None:
+        updates["name"] = req.name
+    if req.path is not None:
+        updates["path"] = req.path
+    if req.instructions is not None:
+        updates["instructions"] = req.instructions
+    if req.is_external is not None:
+        updates["is_external"] = req.is_external
+
+    ws = await update_workspace(workspace_id, updates)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return ws
+
+
+@app.delete("/api/workspaces/{workspace_id}")
+async def api_delete_workspace(workspace_id: str, delete_files: bool = False):
+    res = await delete_workspace(workspace_id, delete_files=delete_files)
+    return res
+
+
+@app.post("/api/chat/tool-approval")
+async def api_chat_tool_approval(req: ToolApprovalRequest):
+    approval = PENDING_TOOL_APPROVALS.get(req.approval_id)
+    if not approval:
+        return JSONResponse(
+            status_code=404,
+            content={"status": "not_found", "message": "Approval request expired or not found"},
+        )
+
+    if req.decision == "always_allow" and req.tool_name:
+        settings = await get_settings()
+        perms = settings.get("tool_permissions", {})
+        perms[req.tool_name] = "allow"
+        await update_settings({"tool_permissions": perms})
+
+    approval["decision"] = req.decision
+    approval["feedback"] = req.feedback or ""
+    approval["event"].set()
+    return {"status": "acknowledged", "approval_id": req.approval_id, "decision": req.decision}
+
+
+@app.post("/api/conversations/{conversation_id}/truncate")
+async def api_truncate_conversation(conversation_id: str, req: TruncateConversationRequest):
+    res = await truncate_conversation_from_message(conversation_id, req.message_id)
+    return res
+
+
+@app.put("/api/workspace/file-content")
+async def api_save_workspace_file_content(req: FileSaveRequest):
+    base_dir = await _resolve_workspace_base(req.workspace_id)
+    try:
+        target = resolve_safe_path(req.path, allow_outside_workspace=True, base_dir=base_dir)
+        bak_path = None
+        if target.exists() and target.is_file():
+            bak_path = create_file_backup(target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+        target.write_text(req.content, encoding="utf-8")
+        return {
+            "status": "success",
+            "path": str(target),
+            "filename": target.name,
+            "backup_filename": bak_path.name if bak_path else None,
+            "size_bytes": target.stat().st_size,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/workspace/revert-backup")
+async def api_revert_backup(req: RevertBackupRequest):
+    base_dir = await _resolve_workspace_base(req.workspace_id)
+    res = tool_revert_file_backup(req.backup_path, base_dir=base_dir)
+    return res
+
+
 @app.get("/api/conversations")
 async def api_list_conversations():
     return {"conversations": await list_conversations()}
@@ -416,8 +617,15 @@ async def api_create_conversation(payload: Dict[str, Any]):
     model = payload.get("model") or "llama3.2:3b"
     mode = payload.get("mode") or "chat"
     context = payload.get("context") or ""
+    workspace_id = payload.get("workspace_id")
     await flush_ollama_vram()
-    conv = await create_conversation(title=title, model=model, mode=mode, context=context)
+    conv = await create_conversation(
+        title=title,
+        model=model,
+        mode=mode,
+        context=context,
+        workspace_id=workspace_id,
+    )
     return conv
 
 
@@ -454,6 +662,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
 
     conv_id = req.conversation_id
     active_context = req.context or ""
+    effective_workspace_id = req.workspace_id
 
     if not conv_id:
         short_title = req.prompt.strip()[:46] or "New Chat"
@@ -462,6 +671,7 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             model=req.model,
             mode=req.mode,
             context=active_context,
+            workspace_id=effective_workspace_id,
         )
         conv_id = conv["id"]
         history_messages = []
@@ -474,10 +684,13 @@ async def api_chat_stream(req: ChatRequest, request: Request):
                 model=req.model,
                 mode=req.mode,
                 context=active_context,
+                workspace_id=effective_workspace_id,
             )
             conv_id = conv["id"]
             history_messages = []
         else:
+            if not effective_workspace_id:
+                effective_workspace_id = existing.get("workspace_id")
             history_messages = existing.get("messages", [])
             saved_ctx = existing.get("context", "")
             # Preserve background context: never overwrite with blank text
@@ -517,6 +730,10 @@ async def api_chat_stream(req: ChatRequest, request: Request):
             image_style=req.image_style or "auto",
             brave_api_key=settings.get("brave_search_api_key", ""),
             attached_files=req.attached_files,
+            permission_mode=settings.get("permission_mode", "ask"),
+            tool_permissions=settings.get("tool_permissions"),
+            external_path_policy=settings.get("external_path_policy", "ask"),
+            workspace_id=effective_workspace_id,
         ):
             if await request.is_disconnected():
                 await flush_ollama_vram()
@@ -590,13 +807,15 @@ async def api_serve_artifact_file(filename: str, download: bool = False):
 async def api_upload_workspace(
     files: List[UploadFile] = File(...),
     conversation_id: Optional[str] = Form(None),
+    workspace_id: Optional[str] = Form(None),
 ):
     """
     Accepts one or more uploaded files or clipboard images, saves them to the workspace artifacts
     directory, registers them in the database, and returns metadata for chat attachment and preview.
     """
     uploaded = []
-    uploads_dir = WORKSPACE_DIR / "uploads"
+    base_dir = await _resolve_workspace_base(workspace_id)
+    uploads_dir = base_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -653,19 +872,20 @@ async def api_upload_workspace(
 
 
 @app.get("/api/workspace/files")
-async def api_list_workspace_files():
+async def api_list_workspace_files(workspace_id: Optional[str] = None):
     """
     Returns all files across the user's workspace for the workspace explorer and multi-file projects.
     """
+    base_dir = await _resolve_workspace_base(workspace_id)
     file_entries = []
-    if WORKSPACE_DIR.exists():
-        for root, dirs, files in os.walk(WORKSPACE_DIR):
-            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+    if base_dir.exists():
+        for root, dirs, files in os.walk(base_dir):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__", ".venv")]
             for file in files:
                 if file.startswith(".") or ".bak" in file:
                     continue
                 full_p = Path(root) / file
-                rel_p = full_p.relative_to(WORKSPACE_DIR)
+                rel_p = full_p.relative_to(base_dir)
                 stat = full_p.stat()
                 ext = full_p.suffix.lower()
                 cat = "document"
@@ -673,7 +893,7 @@ async def api_list_workspace_files():
                     cat = "spreadsheet"
                 elif ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
                     cat = "image"
-                elif ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json"):
+                elif ext in (".py", ".js", ".jsx", ".ts", ".tsx", ".html", ".css", ".json", ".sql", ".sh", ".md", ".txt"):
                     cat = "code"
                 file_entries.append({
                     "name": file,
@@ -684,18 +904,20 @@ async def api_list_workspace_files():
                 })
 
     return {
-        "workspace_root": str(WORKSPACE_DIR.resolve()),
+        "workspace_root": str(base_dir.resolve()),
+        "workspace_id": workspace_id,
         "files": sorted(file_entries, key=lambda x: x["modified_at"], reverse=True),
     }
 
 
 @app.post("/api/workspace/open-folder")
-async def api_open_workspace_folder():
+async def api_open_workspace_folder(workspace_id: Optional[str] = None):
     """
     Opens the local workspace directory directly in the host OS File Explorer.
     """
     try:
-        ws_path = str(WORKSPACE_DIR.resolve())
+        base_dir = await _resolve_workspace_base(workspace_id)
+        ws_path = str(base_dir.resolve())
         if platform.system() == "Windows":
             os.startfile(ws_path)
         elif platform.system() == "Darwin":
@@ -708,13 +930,14 @@ async def api_open_workspace_folder():
 
 
 @app.get("/api/workspace/file-content")
-async def api_get_workspace_file_content(path: str):
+async def api_get_workspace_file_content(path: str, workspace_id: Optional[str] = None):
     """
     Reads and returns the text, code, or media preview data of any workspace file.
     """
     try:
+        base_dir = await _resolve_workspace_base(workspace_id)
         safe_rel = path.replace("\\", "/").strip().lstrip("/")
-        target = confine_to_workspace(safe_rel)
+        target = resolve_safe_path(safe_rel, allow_outside_workspace=True, base_dir=base_dir)
         if not target.exists() or not target.is_file():
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -767,14 +990,15 @@ async def api_get_workspace_file_content(path: str):
 
 
 @app.delete("/api/workspace/file")
-async def api_delete_workspace_file(path: str):
+async def api_delete_workspace_file(path: str, workspace_id: Optional[str] = None):
     """
     Physically deletes any file in the workspace directory and purges any corresponding
     artifact entries from SQLite.
     """
     try:
+        base_dir = await _resolve_workspace_base(workspace_id)
         safe_rel = path.replace("\\", "/").strip().lstrip("/")
-        target = confine_to_workspace(safe_rel)
+        target = resolve_safe_path(safe_rel, allow_outside_workspace=True, base_dir=base_dir)
         if not target.exists():
             raise HTTPException(status_code=404, detail="File not found")
 
@@ -784,7 +1008,7 @@ async def api_delete_workspace_file(path: str):
         else:
             target.unlink(missing_ok=True)
             (ARTIFACTS_DIR / safe_name).unlink(missing_ok=True)
-            (WORKSPACE_DIR / "uploads" / safe_name).unlink(missing_ok=True)
+            (base_dir / "uploads" / safe_name).unlink(missing_ok=True)
 
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("DELETE FROM artifacts WHERE filename = ?", (safe_name,))

@@ -20,6 +20,7 @@ import platform
 import re
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -38,7 +39,9 @@ from .tools import (
     tool_generate_visual_media,
     tool_list_directory,
     tool_read_file,
+    tool_revert_file_backup,
     tool_run_python_sandbox,
+    tool_run_shell_command,
     tool_search_web,
     WORKSPACE_DIR,
 )
@@ -388,6 +391,67 @@ def extract_tool_calls(msg_obj: Dict[str, Any]) -> tuple[List[Dict[str, Any]], s
 
 
 
+PENDING_TOOL_APPROVALS: Dict[str, Dict[str, Any]] = {}
+
+
+def check_tool_permission(
+    tool_name: str,
+    tool_args: Dict[str, Any],
+    permission_mode: str,
+    tool_permissions: Optional[Dict[str, str]] = None,
+    workspace_dir: Optional[Path] = None,
+    external_path_policy: str = "ask",
+) -> str:
+    """
+    Evaluates whether a tool can execute autonomously ('allow'),
+    requires interactive user confirmation ('ask'),
+    or must be blocked immediately ('deny').
+    """
+    mode = (permission_mode or "ask").lower()
+    perms = tool_permissions or {}
+
+    # 1. Plan Only / Read-Only Mode
+    if mode == "plan":
+        read_only_tools = {"read_file", "list_directory", "search_web"}
+        if tool_name not in read_only_tools:
+            return "deny"
+        return "allow"
+
+    # 2. Check per-tool matrix preference
+    setting_for_tool = perms.get(tool_name)
+    if not setting_for_tool:
+        if tool_name in ("read_file", "list_directory", "search_web"):
+            setting_for_tool = "allow"
+        else:
+            setting_for_tool = "ask"
+
+    if setting_for_tool == "deny":
+        return "deny"
+
+    # 3. Check External Path Boundary Guard
+    if external_path_policy == "ask" and workspace_dir:
+        cand_path_str = tool_args.get("filepath") or tool_args.get("target_filepath") or tool_args.get("directory_path")
+        if cand_path_str:
+            try:
+                cand_p = Path(cand_path_str)
+                if cand_p.is_absolute():
+                    ws_real = workspace_dir.resolve()
+                    cand_real = cand_p.resolve()
+                    try:
+                        common = Path(os.path.commonpath([str(ws_real), str(cand_real)])).resolve()
+                        if common != ws_real:
+                            return "ask"
+                    except Exception:
+                        return "ask"
+            except Exception:
+                pass
+
+    if mode == "allow":
+        return "allow"
+
+    return setting_for_tool
+
+
 async def execute_tool_call(
     func_name: str,
     args: Dict[str, Any],
@@ -396,6 +460,7 @@ async def execute_tool_call(
     vram_handoff: bool,
     offline_mode: bool = True,
     brave_api_key: str = "",
+    base_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     start_t = time.time()
     try:
@@ -405,6 +470,12 @@ async def execute_tool_call(
                 description=args.get("description", "Python execution"),
                 target_filepath=args.get("target_filepath"),
                 conversation_id=conversation_id,
+            )
+        elif func_name == "run_shell_command":
+            res = await tool_run_shell_command(
+                command=args.get("command", ""),
+                cwd=args.get("cwd"),
+                base_dir=base_dir,
             )
         elif func_name == "read_file":
             res = await tool_read_file(
@@ -417,6 +488,7 @@ async def execute_tool_call(
                 filepath=args.get("filepath", ""),
                 target_content=args.get("target_content", ""),
                 replacement_content=args.get("replacement_content", ""),
+                base_dir=base_dir,
             )
         elif func_name == "list_directory":
             res = await tool_list_directory(
@@ -521,7 +593,31 @@ async def run_agent_stream(
     image_style: str = "auto",
     brave_api_key: str = "",
     attached_files: Optional[List[Dict[str, Any]]] = None,
+    permission_mode: str = "ask",
+    tool_permissions: Optional[Dict[str, str]] = None,
+    external_path_policy: str = "ask",
+    workspace_id: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
+    # Resolve active workspace directory and instructions
+    active_workspace_dir = WORKSPACE_DIR
+    active_workspace_name = ""
+    active_workspace_instructions = ""
+
+    if workspace_id:
+        from .database import get_workspace
+        ws_record = await get_workspace(workspace_id)
+        if ws_record:
+            active_workspace_name = ws_record.get("name", "")
+            active_workspace_instructions = ws_record.get("instructions", "")
+            raw_ws_path = ws_record.get("path")
+            if raw_ws_path:
+                try:
+                    p = Path(raw_ws_path).resolve()
+                    if p.exists() and p.is_dir():
+                        active_workspace_dir = p
+                except Exception:
+                    pass
+
     # Direct Image Generation Mode: 100% bypass of LLM parsing & zero corporate moralizing
     if mode == "image" or model.startswith("sd:"):
         selected_style = image_style
@@ -552,6 +648,7 @@ async def run_agent_stream(
             vram_handoff=True,
             offline_mode=offline_mode,
             brave_api_key=brave_api_key,
+            base_dir=active_workspace_dir,
         )
         trace_entry["status"] = exec_res.get("status", "success")
         trace_entry["duration_ms"] = exec_res.get("duration_ms", 0)
@@ -611,6 +708,26 @@ async def run_agent_stream(
             "===================================================================="
         )
 
+    if active_workspace_instructions and active_workspace_instructions.strip():
+        sys_prompt += (
+            f"\n\n=== PROJECT / WORKSPACE GUIDELINES ({active_workspace_name or 'Active Workspace'}) ===\n"
+            f"{active_workspace_instructions.strip()}\n"
+            "========================================================================================="
+        )
+
+    guidelines_file = active_workspace_dir / "AI_GUIDELINES.md"
+    if guidelines_file.exists() and guidelines_file.is_file():
+        try:
+            g_content = guidelines_file.read_text(encoding="utf-8", errors="ignore")
+            if g_content.strip():
+                sys_prompt += (
+                    f"\n\n=== AI GUIDELINES DETECTED IN WORKSPACE ({guidelines_file.name}) ===\n"
+                    f"{g_content.strip()[:4000]}\n"
+                    "========================================================================"
+                )
+        except Exception:
+            pass
+
     if attached_files:
         attachment_lines = []
         for af in attached_files:
@@ -628,16 +745,16 @@ async def run_agent_stream(
     if mode == "agent":
         try:
             ws_files = []
-            for item in sorted(WORKSPACE_DIR.glob("**/*"))[:30]:
-                if item.is_file() and not item.name.startswith(".") and ".bak" not in item.name:
-                    rel_p = str(item.relative_to(WORKSPACE_DIR)).replace("\\", "/")
+            for item in sorted(active_workspace_dir.glob("**/*"))[:35]:
+                if item.is_file() and not item.name.startswith(".") and ".bak" not in item.name and "node_modules" not in item.parts:
+                    rel_p = str(item.relative_to(active_workspace_dir)).replace("\\", "/")
                     size_kb = round(item.stat().st_size / 1024, 1)
                     ws_files.append(f"- `{rel_p}` ({size_kb} KB)")
             if ws_files:
                 sys_prompt += (
-                    f"\n\n=== LOCAL WORKSPACE DIRECTORY ({WORKSPACE_DIR.resolve()}) ===\n"
+                    f"\n\n=== ACTIVE WORKSPACE FILES ({active_workspace_dir.resolve()}) ===\n"
                     + "\n".join(ws_files)
-                    + "\nYou have direct filesystem tools (`read_file`, `edit_file_content`, `list_directory`, `execute_python`) to inspect, edit, or create files in this workspace.\n"
+                    + "\nYou have direct filesystem tools (`read_file`, `edit_file_content`, `list_directory`, `run_shell_command`, `execute_python`) to inspect, edit, run, or create files in this workspace.\n"
                     + "================================================================"
                 )
         except Exception:
@@ -824,12 +941,72 @@ async def run_agent_stream(
                             trace_entry["summary"] = f"Reading file: {Path(fn_args.get('filepath', '')).name}"
                         elif fn_name == "edit_file_content":
                             trace_entry["summary"] = f"Editing file: {Path(fn_args.get('filepath', '')).name}"
+                        elif fn_name == "run_shell_command":
+                            trace_entry["summary"] = f"Running: {fn_args.get('command', '')[:60]}"
                         elif fn_name == "list_directory":
                             trace_entry["summary"] = f"Listing folder: {fn_args.get('directory_path', '.')}"
                         elif fn_name == "create_excel_spreadsheet":
                             trace_entry["summary"] = f"Building Excel workbook: {fn_args.get('title', 'Workbook')}"
                         elif fn_name == "create_document":
                             trace_entry["summary"] = f"Building Document: {fn_args.get('title', 'Document')}"
+
+                        # Evaluate Human-in-the-Loop permission
+                        perm = check_tool_permission(
+                            tool_name=fn_name,
+                            tool_args=fn_args,
+                            permission_mode=permission_mode,
+                            tool_permissions=tool_permissions,
+                            workspace_dir=active_workspace_dir,
+                            external_path_policy=external_path_policy,
+                        )
+
+                        if perm == "deny":
+                            trace_entry["status"] = "denied"
+                            trace_entry["summary"] = f"Tool '{fn_name}' execution was denied by permission policy."
+                            tool_traces.append(trace_entry)
+                            yield {"type": "tool_start", "tool": trace_entry}
+                            yield {"type": "tool_end", "tool": trace_entry, "artifacts": []}
+                            ollama_messages.append({
+                                "role": "tool",
+                                "content": json.dumps({"status": "denied", "error": f"Permission denied for '{fn_name}'."}),
+                            })
+                            continue
+
+                        if perm == "ask":
+                            approval_id = f"apr_{uuid.uuid4().hex[:12]}"
+                            appr_event = asyncio.Event()
+                            PENDING_TOOL_APPROVALS[approval_id] = {
+                                "event": appr_event,
+                                "decision": None,
+                                "feedback": "",
+                                "tool_name": fn_name,
+                            }
+                            yield {
+                                "type": "tool_approval_required",
+                                "approval_id": approval_id,
+                                "tool": {
+                                    "id": trace_id,
+                                    "name": fn_name,
+                                    "arguments": fn_args,
+                                    "summary": trace_entry["summary"],
+                                    "workspace_dir": str(active_workspace_dir) if active_workspace_dir else None,
+                                },
+                            }
+                            await appr_event.wait()
+                            decision_info = PENDING_TOOL_APPROVALS.pop(approval_id, {})
+                            decision = decision_info.get("decision", "deny")
+                            if decision == "deny":
+                                reason = decision_info.get("feedback") or "User denied permission to execute this tool."
+                                trace_entry["status"] = "denied"
+                                trace_entry["summary"] = f"Denied: {reason}"
+                                tool_traces.append(trace_entry)
+                                yield {"type": "tool_start", "tool": trace_entry}
+                                yield {"type": "tool_end", "tool": trace_entry, "artifacts": []}
+                                ollama_messages.append({
+                                    "role": "tool",
+                                    "content": json.dumps({"status": "denied", "error": reason}),
+                                })
+                                continue
 
                         yield {"type": "tool_start", "tool": trace_entry}
 
@@ -841,6 +1018,7 @@ async def run_agent_stream(
                             vram_handoff=vram_handoff,
                             offline_mode=offline_mode,
                             brave_api_key=brave_api_key,
+                            base_dir=active_workspace_dir,
                         )
 
                         trace_entry["status"] = exec_res.get("status", "success")
@@ -850,6 +1028,16 @@ async def run_agent_stream(
                         trace_entry["summary"] = exec_res.get("summary") or exec_res.get("stdout") or "Completed"
                         if exec_res.get("backup_created"):
                             trace_entry["backup_created"] = exec_res["backup_created"]
+                        if exec_res.get("diff"):
+                            trace_entry["diff"] = exec_res["diff"]
+                        if exec_res.get("backup_filename"):
+                            trace_entry["backup_filename"] = exec_res["backup_filename"]
+                        if exec_res.get("backup_path"):
+                            trace_entry["backup_path"] = exec_res["backup_path"]
+                        if exec_res.get("filepath"):
+                            trace_entry["filepath"] = exec_res["filepath"]
+                        if exec_res.get("cwd"):
+                            trace_entry["cwd"] = exec_res["cwd"]
                         if fn_name == "search_web":
                             trace_entry["sources"] = exec_res.get("results", [])
                             trace_entry["summary"] = f"Searched '{fn_args.get('query', '')}' • {len(exec_res.get('results', []))} sources retrieved"
@@ -876,6 +1064,8 @@ async def run_agent_stream(
                             tool_payload["stderr"] = exec_res["stderr"]
                         if exec_res.get("content"):
                             tool_payload["content"] = exec_res["content"]
+                        if exec_res.get("diff"):
+                            tool_payload["diff"] = exec_res["diff"]
                         if exec_res.get("backup_created"):
                             tool_payload["backup_created"] = exec_res["backup_created"]
                         if new_arts:

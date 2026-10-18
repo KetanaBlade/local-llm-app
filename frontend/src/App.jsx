@@ -40,7 +40,20 @@ import {
   Folder,
   Copy,
   Check,
+  Edit3,
+  RotateCcw,
+  FilePlus,
+  Settings,
+  FolderPlus,
+  ShieldAlert,
 } from 'lucide-react'
+
+import ToolApprovalCard from './components/ToolApprovalCard'
+import DiffViewer from './components/DiffViewer'
+import AtMentionDropdown from './components/AtMentionDropdown'
+import CodeEditorPanel from './components/CodeEditorPanel'
+import WorkspaceModal from './components/WorkspaceModal'
+import SettingsModal from './components/SettingsModal'
 
 marked.setOptions({
   breaks: true,
@@ -90,7 +103,7 @@ export default function App() {
   const workspaceUploadRef = useRef(null)
   const [hwModalOpen, setHwModalOpen] = useState(false)
   const [modelModalOpen, setModelModalOpen] = useState(false)
-  const [mobileModalOpen, setMobileModalOpen] = useState(false)
+  const [editingMessageId, setEditingMessageId] = useState(null)
 
   // Model download & VRAM flush state
   const [pullingModel, setPullingModel] = useState(null)
@@ -107,6 +120,32 @@ export default function App() {
   const [sleepingLoading, setSleepingLoading] = useState(false)
   const [shutdownModalOpen, setShutdownModalOpen] = useState(false)
   const [isShutdown, setIsShutdown] = useState(false)
+
+  // Multi-Workspace state
+  const [workspaces, setWorkspaces] = useState([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(null)
+  const [collapsedWorkspaces, setCollapsedWorkspaces] = useState({})
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(false)
+  const [workspaceModalMode, setWorkspaceModalMode] = useState('create')
+  const [editingWorkspace, setEditingWorkspace] = useState(null)
+
+  // Settings modal (unified 4-tab settings)
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState('permissions')
+
+  // Tool Approvals (Human-in-the-Loop)
+  const [pendingApprovals, setPendingApprovals] = useState([])
+
+  // In-App Code Editor & Workspace Files
+  const [editingWorkspaceFile, setEditingWorkspaceFile] = useState(null)
+  const [newFileModalOpen, setNewFileModalOpen] = useState(false)
+  const [newFileName, setNewFileName] = useState('')
+  const [revertingBackup, setRevertingBackup] = useState(null)
+
+  // Composer @ mentions & textarea ref
+  const [atQuery, setAtQuery] = useState(null)
+  const [atSelectedIndex, setAtSelectedIndex] = useState(0)
+  const promptTextareaRef = useRef(null)
 
   const toggleSleepMode = async () => {
     setSleepingLoading(true)
@@ -213,9 +252,22 @@ export default function App() {
     await handleFlushVram(newModel)
   }
 
-  const fetchConversations = async () => {
+  const fetchWorkspaces = async () => {
     try {
-      const r = await fetch('/api/conversations')
+      const r = await fetch('/api/workspaces')
+      if (r.ok) {
+        const data = await r.json()
+        setWorkspaces(data.workspaces || [])
+      }
+    } catch (e) {
+      console.error('Failed to fetch workspaces:', e)
+    }
+  }
+
+  const fetchConversations = async (wsId = activeWorkspaceId) => {
+    try {
+      const url = wsId ? `/api/conversations?workspace_id=${wsId}` : '/api/conversations'
+      const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
         setConversations(data.conversations || [])
@@ -225,9 +277,10 @@ export default function App() {
     }
   }
 
-  const fetchArtifacts = async () => {
+  const fetchArtifacts = async (wsId = activeWorkspaceId) => {
     try {
-      const r = await fetch('/api/artifacts')
+      const url = wsId ? `/api/artifacts?workspace_id=${wsId}` : '/api/artifacts'
+      const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
         setArtifacts(data.artifacts || [])
@@ -237,9 +290,10 @@ export default function App() {
     }
   }
 
-  const fetchWorkspaceFiles = async () => {
+  const fetchWorkspaceFiles = async (wsId = activeWorkspaceId) => {
     try {
-      const r = await fetch('/api/workspace/files')
+      const url = wsId ? `/api/workspace/files?workspace_id=${wsId}` : '/api/workspace/files'
+      const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
         setWorkspaceFiles(data.files || [])
@@ -247,6 +301,186 @@ export default function App() {
       }
     } catch (e) {
       console.error(e)
+    }
+  }
+
+  const handlePickFolder = async () => {
+    try {
+      const res = await fetch('/api/workspaces/pick-folder', { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        return data.folder || null
+      }
+    } catch (e) {
+      console.error('Pick folder error:', e)
+    }
+    return null
+  }
+
+  const handleSaveWorkspace = async (wsData) => {
+    if (workspaceModalMode === 'edit' && editingWorkspace) {
+      const res = await fetch(`/api/workspaces/${editingWorkspace.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wsData),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to update workspace')
+      }
+    } else {
+      const res = await fetch('/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wsData),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to create workspace')
+      }
+      const data = await res.json()
+      if (data.workspace?.id) {
+        setActiveWorkspaceId(data.workspace.id)
+      }
+    }
+    await fetchWorkspaces()
+  }
+
+  const handleDeleteWorkspace = async (e, ws) => {
+    if (e) e.stopPropagation()
+    const confirmText = ws.is_external
+      ? `Unlink workspace "${ws.name}"? This removes the workspace from Local AI Studio. Your files on disk at "${ws.path}" will NOT be deleted.`
+      : `Delete workspace "${ws.name}"? This unlinks the workspace from Local AI Studio.`
+    if (!window.confirm(confirmText)) return
+
+    try {
+      const res = await fetch(`/api/workspaces/${ws.id}`, { method: 'DELETE' })
+      if (res.ok) {
+        if (activeWorkspaceId === ws.id) {
+          setActiveWorkspaceId(null)
+          startNewChat(null)
+        }
+        await fetchWorkspaces()
+        await fetchConversations(null)
+      }
+    } catch (err) {
+      console.error('Failed to delete workspace:', err)
+    }
+  }
+
+  const handleToolApprovalDecision = async (approvalId, decision) => {
+    try {
+      await fetch('/api/chat/tool-approval', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approval_id: approvalId, decision }),
+      })
+      setPendingApprovals((prev) => prev.filter((a) => a.approval_id !== approvalId))
+      if (decision === 'always_allow') {
+        await fetchSystemStatus()
+      }
+    } catch (err) {
+      console.error('Tool approval decision error:', err)
+    }
+  }
+
+  const handleSaveFileContent = async (relPath, newContent) => {
+    try {
+      const res = await fetch('/api/workspace/file-content', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: relPath,
+          content: newContent,
+          workspace_id: activeWorkspaceId,
+        }),
+      })
+      if (res.ok) {
+        await fetchWorkspaceFiles(activeWorkspaceId)
+        return true
+      }
+      return false
+    } catch (err) {
+      console.error('Failed to save file content:', err)
+      return false
+    }
+  }
+
+  const handleRevertBackup = async (backupPath) => {
+    if (!backupPath) return
+    setRevertingBackup(backupPath)
+    try {
+      const res = await fetch('/api/workspace/revert-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          backup_filepath: backupPath,
+          workspace_id: activeWorkspaceId,
+        }),
+      })
+      if (res.ok) {
+        await fetchWorkspaceFiles(activeWorkspaceId)
+        await fetchArtifacts(activeWorkspaceId)
+        if (editingWorkspaceFile) {
+          await handleViewWorkspaceFile(editingWorkspaceFile.relative_path)
+        }
+      }
+    } catch (err) {
+      console.error('Failed to revert backup:', err)
+    } finally {
+      setRevertingBackup(null)
+    }
+  }
+
+  const handleCreateNewFile = async (fn) => {
+    if (!fn || !fn.trim()) return
+    const cleanFn = fn.trim()
+    try {
+      const res = await fetch('/api/workspace/file-content', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          path: cleanFn,
+          content: '',
+          workspace_id: activeWorkspaceId,
+        }),
+      })
+      if (res.ok) {
+        setNewFileModalOpen(false)
+        setNewFileName('')
+        await fetchWorkspaceFiles(activeWorkspaceId)
+        await handleViewWorkspaceFile(cleanFn)
+      }
+    } catch (err) {
+      console.error('Failed to create new file:', err)
+    }
+  }
+
+  const handleTruncateAndResubmit = async (msgId, newPromptText) => {
+    if (!activeConvId) return
+    try {
+      const res = await fetch(`/api/conversations/${activeConvId}/truncate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message_id: msgId }),
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setMessages(data.messages || [])
+        await handleSendPrompt(newPromptText)
+      }
+    } catch (err) {
+      console.error('Failed to truncate and resubmit:', err)
+    }
+  }
+
+  const handleRegenerateResponse = async (assistantMsgIdx) => {
+    if (assistantMsgIdx <= 0) return
+    const prevUserMsg = messages[assistantMsgIdx - 1]
+    if (prevUserMsg && prevUserMsg.role === 'user') {
+      const userText = prevUserMsg.content
+      const assistantMsg = messages[assistantMsgIdx]
+      await handleTruncateAndResubmit(assistantMsg.id, userText)
     }
   }
 
@@ -261,6 +495,9 @@ export default function App() {
       if (activeConvId) {
         formData.append('conversation_id', activeConvId)
       }
+      if (activeWorkspaceId) {
+        formData.append('workspace_id', activeWorkspaceId)
+      }
       const r = await fetch('/api/workspace/upload', {
         method: 'POST',
         body: formData,
@@ -269,8 +506,8 @@ export default function App() {
         const data = await r.json()
         if (data.files && data.files.length > 0) {
           setAttachedFiles((prev) => [...prev, ...data.files])
-          await fetchArtifacts()
-          await fetchWorkspaceFiles()
+          await fetchArtifacts(activeWorkspaceId)
+          await fetchWorkspaceFiles(activeWorkspaceId)
         }
       }
     } catch (err) {
@@ -308,7 +545,10 @@ export default function App() {
 
   const handleOpenWorkspaceFolder = async () => {
     try {
-      await fetch('/api/workspace/open-folder', { method: 'POST' })
+      const url = activeWorkspaceId
+        ? `/api/workspace/open-folder?workspace_id=${activeWorkspaceId}`
+        : '/api/workspace/open-folder'
+      await fetch(url, { method: 'POST' })
     } catch (err) {
       console.error('Failed to open workspace folder:', err)
     }
@@ -316,11 +556,15 @@ export default function App() {
 
   const handleViewWorkspaceFile = async (relPath) => {
     try {
-      const r = await fetch(`/api/workspace/file-content?path=${encodeURIComponent(relPath)}`)
+      const url = activeWorkspaceId
+        ? `/api/workspace/file-content?path=${encodeURIComponent(relPath)}&workspace_id=${activeWorkspaceId}`
+        : `/api/workspace/file-content?path=${encodeURIComponent(relPath)}`
+      const r = await fetch(url)
       if (r.ok) {
         const data = await r.json()
         setViewingFile(data)
-        setWorkspaceTab('preview')
+        setEditingWorkspaceFile(data)
+        setWorkspaceTab('workspace')
         setFilePanelOpen(true)
       }
     } catch (e) {
@@ -346,15 +590,19 @@ export default function App() {
   const handleDeleteWorkspaceFile = async (e, relPath) => {
     if (e) e.stopPropagation()
     try {
-      const r = await fetch(`/api/workspace/file?path=${encodeURIComponent(relPath)}`, {
-        method: 'DELETE',
-      })
+      const url = activeWorkspaceId
+        ? `/api/workspace/file?path=${encodeURIComponent(relPath)}&workspace_id=${activeWorkspaceId}`
+        : `/api/workspace/file?path=${encodeURIComponent(relPath)}`
+      const r = await fetch(url, { method: 'DELETE' })
       if (r.ok) {
         if (viewingFile?.relative_path === relPath) {
           setViewingFile(null)
         }
-        await fetchWorkspaceFiles()
-        await fetchArtifacts()
+        if (editingWorkspaceFile?.relative_path === relPath) {
+          setEditingWorkspaceFile(null)
+        }
+        await fetchWorkspaceFiles(activeWorkspaceId)
+        await fetchArtifacts(activeWorkspaceId)
       }
     } catch (e) {
       console.error('Failed to delete workspace file:', e)
@@ -367,12 +615,13 @@ export default function App() {
 
   useEffect(() => {
     fetchSystemStatus()
-    fetchConversations()
-    fetchArtifacts()
-    fetchWorkspaceFiles()
+    fetchWorkspaces()
+    fetchConversations(activeWorkspaceId)
+    fetchArtifacts(activeWorkspaceId)
+    fetchWorkspaceFiles(activeWorkspaceId)
     const interval = setInterval(fetchSystemStatus, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [activeWorkspaceId])
 
   const loadConversation = async (convId) => {
     try {
@@ -380,6 +629,7 @@ export default function App() {
       if (r.ok) {
         const data = await r.json()
         setActiveConvId(data.id)
+        setActiveWorkspaceId(data.workspace_id || null)
         setMessages(data.messages || [])
         setChatContext(data.context || '')
         setContextExpanded(Boolean(data.context))
@@ -387,14 +637,18 @@ export default function App() {
         if (typeof window !== 'undefined' && window.innerWidth < 1024) {
           setLeftSidebarOpen(false)
         }
+        await fetchWorkspaceFiles(data.workspace_id || null)
+        await fetchArtifacts(data.workspace_id || null)
       }
     } catch (e) {
       console.error(e)
     }
   }
 
-  const startNewChat = () => {
+  const startNewChat = (wsId = undefined) => {
     setActiveConvId(null)
+    const targetWsId = wsId !== undefined ? wsId : activeWorkspaceId
+    setActiveWorkspaceId(targetWsId)
     setMessages([])
     setChatContext('')
     setContextExpanded(true)
@@ -403,7 +657,8 @@ export default function App() {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setLeftSidebarOpen(false)
     }
-    // Automatically flush GPU VRAM cache whenever starting a new chat
+    fetchWorkspaceFiles(targetWsId)
+    fetchArtifacts(targetWsId)
     handleFlushVram(null)
   }
 
@@ -590,6 +845,25 @@ export default function App() {
     const filesToSend = [...attachedFiles]
     setAttachedFiles([])
 
+    // If resubmitting an edited message, truncate conversation from that message onwards
+    const truncMsgId = editingMessageId
+    setEditingMessageId(null)
+    if (truncMsgId && activeConvId) {
+      try {
+        const truncRes = await fetch(`/api/conversations/${activeConvId}/truncate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message_id: truncMsgId }),
+        })
+        if (truncRes.ok) {
+          const truncData = await truncRes.json()
+          setMessages(truncData.messages || [])
+        }
+      } catch (err) {
+        console.error('Failed to truncate conversation before sending edited prompt:', err)
+      }
+    }
+
     lastSendTimeRef.current = Date.now()
 
     if (isSleeping) {
@@ -637,6 +911,7 @@ export default function App() {
         signal: abortController.signal,
         body: JSON.stringify({
           conversation_id: activeConvId,
+          workspace_id: activeWorkspaceId,
           prompt: promptText,
           model: selectedModel,
           mode: imageGenMode ? 'image' : (orchestratorMode ? 'agent' : 'chat'),
@@ -673,6 +948,10 @@ export default function App() {
 
           if (ev.type === 'session') {
             setActiveConvId(ev.conversation_id)
+          } else if (ev.type === 'tool_approval_required') {
+            setPendingApprovals((prev) => [...prev, ev])
+          } else if (ev.type === 'tool_approval_result') {
+            setPendingApprovals((prev) => prev.filter((a) => a.approval_id !== ev.approval_id))
           } else if (ev.type === 'status') {
             setStreamStatus(ev.message)
           } else if (ev.type === 'tool_start') {
@@ -710,7 +989,7 @@ export default function App() {
               setSelectedArtifact(newArts[0])
               setActiveSheetIdx(0)
               setFilePanelOpen(true)
-              fetchArtifacts()
+              fetchArtifacts(activeWorkspaceId)
             }
             setMessages((prev) =>
               prev.map((m) =>
@@ -748,8 +1027,9 @@ export default function App() {
             setMessages((prev) =>
               prev.map((m) => (m.id === tempAssistantId ? ev.message : m))
             )
-            fetchConversations()
-            fetchArtifacts()
+            fetchConversations(activeWorkspaceId)
+            fetchArtifacts(activeWorkspaceId)
+            fetchWorkspaceFiles(activeWorkspaceId)
             fetchSystemStatus()
           }
         }
@@ -832,13 +1112,21 @@ export default function App() {
             <div className="h-6 w-6 shrink-0 rounded-md bg-[#D97757]/15 border border-[#D97757]/40 flex items-center justify-center">
               <div className="h-2 w-2 rounded-sm bg-[#D97757]" />
             </div>
-            <span className="font-semibold tracking-tight text-sm text-white truncate">
-              Local AI Studio
-            </span>
+            {/* Breadcrumb Hierarchy */}
+            <div className="flex items-center gap-1.5 text-xs min-w-0 truncate">
+              <span className="font-semibold text-white truncate max-w-[120px] sm:max-w-[200px]">
+                {workspaces.find((w) => w.id === activeWorkspaceId)?.name || 'Local AI Studio'}
+              </span>
+              <span className="text-slate-600">/</span>
+              <span className="text-slate-400 truncate max-w-[120px] sm:max-w-[240px]">
+                {conversations.find((c) => c.id === activeConvId)?.title || 'New Chat'}
+              </span>
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* + MODELS EXPLORER */}
           <button
             type="button"
             onClick={() => setModelModalOpen(true)}
@@ -850,58 +1138,7 @@ export default function App() {
             <span className="font-medium">+ Models</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setMobileModalOpen(true)}
-            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition cursor-pointer"
-            title="Open on your Phone over Home Wi-Fi"
-          >
-            <Smartphone className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden md:inline font-medium">Phone Link</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (!selectedArtifact && artifacts.length > 0) {
-                setSelectedArtifact(artifacts[0])
-              }
-              setFilePanelOpen((v) => !v)
-            }}
-            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
-              filePanelOpen
-                ? 'border-[#D97757]/50 bg-[#D97757]/15 text-white'
-                : 'border-white/[0.08] bg-[#14171F] text-slate-300 hover:bg-[#1B1F2A]'
-            }`}
-            title="View, Download, or Delete Created Files"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-[#D97757]" />
-            <span className="hidden sm:inline font-medium">Files</span>
-            {artifacts.length > 0 && (
-              <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-black/40 text-slate-200 tabular-nums">
-                {artifacts.length}
-              </span>
-            )}
-          </button>
-
-          {/* GAMING MODE / 0 GPU VRAM TOGGLE */}
-          <button
-            type="button"
-            onClick={() => handleUpdateSetting({ gaming_mode: !settings?.gaming_mode })}
-            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
-              settings?.gaming_mode
-                ? 'border-amber-500/50 bg-amber-500/15 text-amber-200'
-                : 'border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-300'
-            }`}
-            title="Gaming Mode: Offloads LLM models 100% to your 64GB System RAM so your RTX 4070 SUPER GPU retains 100% VRAM and 0% FPS drops for games."
-          >
-            <Gamepad2 className={`w-3.5 h-3.5 ${settings?.gaming_mode ? 'text-amber-400' : 'text-slate-400'}`} />
-            <span className="hidden xl:inline font-medium">
-              {settings?.gaming_mode ? 'Gaming: 0 VRAM' : 'Gaming Mode'}
-            </span>
-          </button>
-
-          {/* SLEEP MODE / 0 MB VRAM BUTTON */}
+          {/* SLEEP MODE / 0 MB VRAM BUTTON - ALWAYS PRESERVED */}
           <button
             type="button"
             onClick={toggleSleepMode}
@@ -918,19 +1155,45 @@ export default function App() {
             ) : (
               <Moon className={`w-3.5 h-3.5 ${isSleeping ? 'text-cyan-400 fill-cyan-400' : 'text-slate-400'}`} />
             )}
-            <span className="hidden xl:inline font-medium">
+            <span className="hidden sm:inline font-medium">
               {isSleeping ? '0 MB VRAM (Asleep)' : 'Sleep (0 VRAM)'}
             </span>
           </button>
 
-          {/* POWER OFF / QUIT SERVER BUTTON */}
+          {/* SETTINGS (4 TABS) */}
           <button
             type="button"
-            onClick={() => setShutdownModalOpen(true)}
-            className="h-9 w-9 rounded-lg border border-red-500/20 bg-red-500/10 hover:bg-red-500/25 text-red-400 flex items-center justify-center transition shrink-0 cursor-pointer"
-            title="Close Server: Cleanly terminates the backend process and releases all system resources."
+            onClick={() => setSettingsModalOpen(true)}
+            className="h-9 px-2.5 sm:px-3 rounded-lg border border-white/[0.08] bg-[#14171F] hover:bg-[#1B1F2A] text-slate-200 flex items-center gap-1.5 text-xs transition cursor-pointer"
+            title="Studio Settings: Agent Permissions, Hardware, Air-Gap Privacy, and Phone Link"
           >
-            <Power className="w-3.5 h-3.5" />
+            <Settings className="w-3.5 h-3.5 text-[#D97757]" />
+            <span className="hidden sm:inline font-medium">Settings</span>
+          </button>
+
+          {/* FILES & WORKSPACE RIGHT PANEL TOGGLE */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedArtifact && artifacts.length > 0) {
+                setSelectedArtifact(artifacts[0])
+              }
+              setFilePanelOpen((v) => !v)
+            }}
+            className={`h-9 px-2.5 sm:px-3 rounded-lg border flex items-center gap-1.5 text-xs transition cursor-pointer ${
+              filePanelOpen
+                ? 'border-[#D97757]/50 bg-[#D97757]/15 text-white'
+                : 'border-white/[0.08] bg-[#14171F] text-slate-300 hover:bg-[#1B1F2A]'
+            }`}
+            title="View, Edit, or Download Created Files and Code"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-[#D97757]" />
+            <span className="hidden sm:inline font-medium">Files</span>
+            {artifacts.length > 0 && (
+              <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-black/40 text-slate-200 tabular-nums">
+                {artifacts.length}
+              </span>
+            )}
           </button>
         </div>
       </header>
@@ -945,74 +1208,230 @@ export default function App() {
           />
         )}
 
-        {/* LEFT SIDEBAR: YOUR CHATS */}
+        {/* LEFT SIDEBAR: WORKSPACES & CONVERSATIONS */}
         {leftSidebarOpen && (
           <aside className="fixed lg:static inset-y-0 left-0 w-64 shrink-0 border-r border-white/[0.075] bg-[#0D0F14] flex flex-col justify-between z-40">
             <div className="p-3 space-y-4 overflow-y-auto flex-1">
+              {/* Top Action Row: New Chat + New Workspace */}
               <div className="flex items-center gap-2">
                 <button
-                  onClick={startNewChat}
-                  className="flex-1 h-10 px-3 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white font-medium text-xs flex items-center gap-2 shadow-sm transition"
+                  type="button"
+                  onClick={() => startNewChat(activeWorkspaceId)}
+                  className="flex-1 h-9 px-2.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white font-medium text-xs flex items-center justify-center gap-1.5 shadow-sm transition cursor-pointer"
+                  title="Start a new chat"
                 >
                   <Plus className="w-4 h-4" />
                   <span>New Chat</span>
                 </button>
+
                 <button
+                  type="button"
+                  onClick={() => {
+                    setWorkspaceModalMode('create')
+                    setEditingWorkspace(null)
+                    setWorkspaceModalOpen(true)
+                  }}
+                  className="h-9 px-2.5 rounded-lg border border-white/[0.1] bg-[#14171F] hover:bg-[#1C202C] text-slate-200 text-xs font-medium flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                  title="Create or link a new workspace/project folder"
+                >
+                  <FolderPlus className="w-4 h-4 text-[#D97757]" />
+                  <span className="hidden sm:inline">Project</span>
+                </button>
+
+                <button
+                  type="button"
                   onClick={() => setLeftSidebarOpen(false)}
-                  className="lg:hidden h-10 w-10 rounded-lg border border-white/[0.08] bg-[#14171F] flex items-center justify-center text-slate-300"
+                  className="lg:hidden h-9 w-9 rounded-lg border border-white/[0.08] bg-[#14171F] flex items-center justify-center text-slate-300"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
+              {/* Section 1: Workspaces & Projects */}
               <div>
-                <div className="px-1.5 mb-2 flex items-center justify-between">
-                  <span className="text-[11px] font-medium text-slate-400">
-                    Your Conversations
-                  </span>
-                  <span className="text-[11px] font-mono text-slate-500 tabular-nums">
-                    {conversations.length}
+                <div className="px-1.5 mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                  <div className="flex items-center gap-1.5">
+                    <Folder className="w-3.5 h-3.5 text-[#D97757]" />
+                    <span>PROJECTS & WORKSPACES</span>
+                  </div>
+                  <span className="font-mono text-slate-500 tabular-nums">
+                    {workspaces.length}
                   </span>
                 </div>
 
-                {conversations.length === 0 ? (
-                  <div className="px-3 py-5 text-xs text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed">
-                    Your chat history is saved privately on your computer. Deleting a chat
-                    permanently wipes it and its files from disk.
+                {workspaces.length === 0 ? (
+                  <div className="px-3 py-3 text-[11px] text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed mb-3">
+                    No projects yet. Click <strong className="text-slate-400">+ Project</strong> above to link a folder or start an isolated workspace.
                   </div>
                 ) : (
-                  <div className="space-y-1">
-                    {conversations.map((c) => (
-                      <div
-                        key={c.id}
-                        onClick={() => loadConversation(c.id)}
-                        className={`group px-2.5 py-2 rounded-lg text-xs cursor-pointer flex items-center justify-between gap-2 transition ${
-                          activeConvId === c.id
-                            ? 'bg-white/[0.09] text-white font-medium border border-white/[0.1]'
-                            : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
-                        }`}
-                      >
-                        <span className="truncate">{c.title}</span>
-                        <button
-                          onClick={(e) => handleDeleteConversation(e, c.id)}
-                          aria-label="Permanently obliterate chat"
-                          title="Permanently delete chat & its files from database and disk"
-                          className="text-slate-500 hover:text-rose-400 p-1 transition shrink-0"
+                  <div className="space-y-1 mb-3">
+                    {workspaces.map((ws) => {
+                      const isSelected = activeWorkspaceId === ws.id
+                      const isCollapsed = Boolean(collapsedWorkspaces[ws.id])
+                      const wsChats = conversations.filter((c) => c.workspace_id === ws.id)
+
+                      return (
+                        <div key={ws.id} className="rounded-lg overflow-hidden border border-white/[0.05] bg-[#0E1118]">
+                          {/* Workspace Item Header */}
+                          <div
+                            onClick={() => {
+                              setActiveWorkspaceId(ws.id)
+                              fetchWorkspaceFiles(ws.id)
+                              fetchArtifacts(ws.id)
+                              setCollapsedWorkspaces((prev) => ({ ...prev, [ws.id]: !prev[ws.id] }))
+                            }}
+                            className={`group px-2.5 py-1.5 flex items-center justify-between gap-1.5 text-xs cursor-pointer transition ${
+                              isSelected
+                                ? 'bg-white/[0.08] text-white font-medium border-l-2 border-[#D97757]'
+                                : 'text-slate-300 hover:bg-white/[0.04]'
+                            }`}
+                          >
+                            <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                              {isCollapsed ? (
+                                <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              ) : (
+                                <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                              )}
+                              <span className="truncate">{ws.name}</span>
+                              {ws.is_external && (
+                                <span className="text-[9px] font-mono px-1 py-0.2 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 shrink-0">
+                                  PC
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  startNewChat(ws.id)
+                                }}
+                                title="New chat in this workspace"
+                                className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
+                              >
+                                <Plus className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingWorkspace(ws)
+                                  setWorkspaceModalMode('edit')
+                                  setWorkspaceModalOpen(true)
+                                }}
+                                title="Edit workspace settings & instructions"
+                                className="p-1 rounded text-slate-400 hover:text-white hover:bg-white/10"
+                              >
+                                <Settings className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteWorkspace(e, ws)}
+                                title={ws.is_external ? 'Unlink workspace (keeps files on disk)' : 'Delete workspace'}
+                                className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Workspace Chats (if expanded) */}
+                          {!isCollapsed && (
+                            <div className="pl-4 pr-1 py-1 space-y-0.5 bg-black/20 border-t border-white/[0.04]">
+                              {wsChats.length === 0 ? (
+                                <div className="py-1 px-2 text-[10px] text-slate-500 italic">
+                                  No chats yet. Click + to start.
+                                </div>
+                              ) : (
+                                wsChats.map((c) => (
+                                  <div
+                                    key={c.id}
+                                    onClick={() => loadConversation(c.id)}
+                                    className={`group px-2 py-1 rounded text-xs cursor-pointer flex items-center justify-between gap-1.5 transition ${
+                                      activeConvId === c.id
+                                        ? 'bg-[#D97757]/20 text-white font-medium'
+                                        : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
+                                    }`}
+                                  >
+                                    <span className="truncate">{c.title}</span>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => handleDeleteConversation(e, c.id)}
+                                      className="text-slate-500 hover:text-rose-400 p-0.5 opacity-0 group-hover:opacity-100 transition shrink-0"
+                                      title="Delete chat"
+                                    >
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Section 2: General Conversations (Agnostic) */}
+              <div>
+                <div className="px-1.5 mb-1.5 flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                  <div className="flex items-center gap-1.5">
+                    <MessageSquare className="w-3.5 h-3.5 text-slate-400" />
+                    <span>GENERAL CHATS</span>
+                  </div>
+                  <span className="font-mono text-slate-500 tabular-nums">
+                    {conversations.filter((c) => !c.workspace_id).length}
+                  </span>
+                </div>
+
+                {conversations.filter((c) => !c.workspace_id).length === 0 ? (
+                  <div className="px-3 py-3 text-[11px] text-slate-500 border border-dashed border-white/[0.06] rounded-lg text-center leading-relaxed">
+                    General chats are saved privately on your PC.
+                  </div>
+                ) : (
+                  <div className="space-y-0.5">
+                    {conversations
+                      .filter((c) => !c.workspace_id)
+                      .map((c) => (
+                        <div
+                          key={c.id}
+                          onClick={() => loadConversation(c.id)}
+                          className={`group px-2.5 py-1.5 rounded-lg text-xs cursor-pointer flex items-center justify-between gap-2 transition ${
+                            activeConvId === c.id
+                              ? 'bg-white/[0.09] text-white font-medium border border-white/[0.1]'
+                              : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'
+                          }`}
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))}
+                          <span className="truncate">{c.title}</span>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteConversation(e, c.id)}
+                            aria-label="Delete chat"
+                            title="Permanently delete chat"
+                            className="text-slate-500 hover:text-rose-400 p-1 opacity-0 group-hover:opacity-100 transition shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
                   </div>
                 )}
               </div>
             </div>
 
+            {/* Sidebar Footer: GPU Telemetry, Clear VRAM, & Power Off */}
             {hw && (
               <div className="p-3 border-t border-white/[0.075] bg-[#0B0D12] space-y-2">
                 <div
-                  onClick={() => setHwModalOpen(true)}
+                  onClick={() => {
+                    setSettingsTab('hardware')
+                    setSettingsModalOpen(true)
+                  }}
                   className="cursor-pointer hover:opacity-90 transition"
+                  title="Click to open Hardware settings"
                 >
                   <div className="flex items-center justify-between text-[11px] text-slate-300 mb-0.5">
                     <span className="truncate font-medium">{hw.gpu?.name}</span>
@@ -1022,8 +1441,9 @@ export default function App() {
                     {hw.gpu.vram_free_gb} GB free of {hw.gpu.vram_total_gb} GB memory
                   </div>
                 </div>
-                <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/[0.06]">
-                  <span className="text-[10px] font-mono text-slate-500 truncate">
+
+                <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-white/[0.06]">
+                  <span className="text-[10px] font-mono text-slate-500 truncate flex-1">
                     {systemStatus?.running_models?.length > 0
                       ? `Loaded: ${systemStatus.running_models.map((m) => m.name).join(', ')}`
                       : 'VRAM cache idle'}
@@ -1032,10 +1452,18 @@ export default function App() {
                     type="button"
                     disabled={flushingVram}
                     onClick={() => handleFlushVram(null)}
-                    className="px-2 py-1 rounded bg-white/[0.06] hover:bg-[#D97757]/20 hover:text-[#D97757] text-[10px] font-mono text-slate-300 border border-white/[0.08] shrink-0 transition"
+                    className="px-2 py-1 rounded bg-white/[0.06] hover:bg-[#D97757]/20 hover:text-[#D97757] text-[10px] font-mono text-slate-300 border border-white/[0.08] shrink-0 transition cursor-pointer"
                     title="Unload all models from GPU VRAM immediately"
                   >
                     {flushingVram ? 'Clearing...' : 'Clear VRAM'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShutdownModalOpen(true)}
+                    className="p-1 rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 shrink-0 transition cursor-pointer"
+                    title="Shutdown Studio server cleanly"
+                  >
+                    <Power className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
@@ -1219,12 +1647,21 @@ export default function App() {
                       >
                         <MessageRow
                           msg={msg}
+                          msgIndex={idx}
                           onSelectArtifact={(art) => {
                             setSelectedArtifact(art)
                             setActiveSheetIdx(0)
                             setFilePanelOpen(true)
                           }}
                           onDeleteArtifact={handleDeleteArtifact}
+                          onEditUserPrompt={(m) => {
+                            setPromptInput(m.content)
+                            setEditingMessageId(m.id)
+                            promptTextareaRef.current?.focus()
+                          }}
+                          onRegenerate={() => handleRegenerateResponse(idx)}
+                          onRevertBackup={handleRevertBackup}
+                          revertingBackup={revertingBackup}
                         />
                       </div>
                     )
@@ -1257,17 +1694,68 @@ export default function App() {
           {/* BOTTOM COMPOSER BAR (Safe-area padded & compact so it never clips on mobile) */}
           <div className="shrink-0 px-2.5 sm:px-4 pt-2 pb-3 safe-bottom border-t border-white/[0.075] bg-[#0B0D12] z-20">
             <div className="max-w-3xl mx-auto">
+              {/* PENDING TOOL APPROVAL MODAL / CARD */}
+              {pendingApprovals.length > 0 && (
+                <div className="mb-2">
+                  <ToolApprovalCard
+                    approval={pendingApprovals[0]}
+                    onDecision={handleToolApprovalDecision}
+                  />
+                </div>
+              )}
+
               <form
                 onSubmit={(e) => {
                   e.preventDefault()
                   handleSendPrompt()
                 }}
-                className="rounded-xl bg-[#12151E] border border-white/[0.1] focus-within:border-[#D97757]/60 transition p-2 sm:p-2.5 space-y-2"
+                className="relative rounded-xl bg-[#12151E] border border-white/[0.1] focus-within:border-[#D97757]/60 transition p-2 sm:p-2.5 space-y-2"
               >
+                {/* Floating @ Autocomplete Dropdown */}
+                {atQuery !== null && (
+                  <AtMentionDropdown
+                    files={workspaceFiles}
+                    query={atQuery}
+                    selectedIndex={atSelectedIndex}
+                    onSelect={(file) => {
+                      const textarea = promptTextareaRef.current
+                      const cursorPos = textarea?.selectionStart || promptInput.length
+                      const textBefore = promptInput.slice(0, cursorPos)
+                      const textAfter = promptInput.slice(cursorPos)
+                      const atIdx = textBefore.lastIndexOf('@')
+                      if (atIdx !== -1) {
+                        setPromptInput(textBefore.slice(0, atIdx) + `@${file.name} ` + textAfter)
+                      }
+                      handleAttachWorkspaceFile(file)
+                      setAtQuery(null)
+                    }}
+                  />
+                )}
+
                 {isSleeping && (
                   <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-300">
                     <Moon className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400 shrink-0" />
                     <span>Sleep Mode active (0 MB VRAM in use). Type any message or press Enter to wake up.</span>
+                  </div>
+                )}
+
+                {editingMessageId && (
+                  <div className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-xs text-amber-200 font-mono">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Edit3 className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="truncate">Editing previous prompt. Resubmitting will branch conversation from this turn.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingMessageId(null)
+                        setPromptInput('')
+                      }}
+                      className="p-1 rounded hover:bg-amber-500/25 text-amber-300 hover:text-white transition shrink-0 ml-2"
+                      title="Cancel edit"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 )}
 
@@ -1323,11 +1811,63 @@ export default function App() {
                 )}
 
                 <textarea
+                  ref={promptTextareaRef}
                   rows={2}
                   value={promptInput}
-                  onChange={(e) => setPromptInput(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setPromptInput(val)
+                    const cursorPos = e.target.selectionStart
+                    const textBefore = val.slice(0, cursorPos)
+                    const match = textBefore.match(/@([a-zA-Z0-9_\-./]*)$/)
+                    if (match) {
+                      setAtQuery(match[1])
+                      setAtSelectedIndex(0)
+                    } else {
+                      setAtQuery(null)
+                    }
+                  }}
                   onPaste={handleClipboardPaste}
                   onKeyDown={(e) => {
+                    if (atQuery !== null) {
+                      const filteredFiles = (workspaceFiles || []).filter((f) =>
+                        (f.name || '').toLowerCase().includes(atQuery.toLowerCase())
+                      ).slice(0, 8)
+
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault()
+                        setAtSelectedIndex((prev) => (prev + 1) % Math.max(1, filteredFiles.length))
+                        return
+                      }
+                      if (e.key === 'ArrowUp') {
+                        e.preventDefault()
+                        setAtSelectedIndex((prev) => (prev - 1 + filteredFiles.length) % Math.max(1, filteredFiles.length))
+                        return
+                      }
+                      if ((e.key === 'Enter' || e.key === 'Tab') && filteredFiles.length > 0) {
+                        e.preventDefault()
+                        const sel = filteredFiles[atSelectedIndex] || filteredFiles[0]
+                        if (sel) {
+                          const textarea = promptTextareaRef.current
+                          const cursorPos = textarea?.selectionStart || promptInput.length
+                          const textBefore = promptInput.slice(0, cursorPos)
+                          const textAfter = promptInput.slice(cursorPos)
+                          const atIdx = textBefore.lastIndexOf('@')
+                          if (atIdx !== -1) {
+                            setPromptInput(textBefore.slice(0, atIdx) + `@${sel.name} ` + textAfter)
+                          }
+                          handleAttachWorkspaceFile(sel)
+                          setAtQuery(null)
+                        }
+                        return
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setAtQuery(null)
+                        return
+                      }
+                    }
+
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
                       handleSendPrompt()
@@ -1418,6 +1958,22 @@ export default function App() {
                         <span>Image</span>
                       </button>
                     </div>
+
+                    {/* Autonomy Mode Quick Pill */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSettingsTab('permissions')
+                        setSettingsModalOpen(true)
+                      }}
+                      className="h-8 px-2 rounded-md bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] font-mono text-slate-300 flex items-center gap-1 transition cursor-pointer shrink-0"
+                      title="Click to view & configure agent permissions"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="hidden sm:inline">
+                        {settings?.permission_mode === 'autonomous' ? 'Autonomous' : settings?.permission_mode === 'plan' ? 'Plan Only' : 'Ask on Write'}
+                      </span>
+                    </button>
 
                     {/* Image Engine / Style Picker (Visible when Image Gen Mode is Active) */}
                     {imageGenMode && (
@@ -1543,6 +2099,15 @@ export default function App() {
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
+                  onClick={() => setNewFileModalOpen(true)}
+                  className="h-8 px-2 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
+                  title="Create new file in workspace"
+                >
+                  <FilePlus className="w-3.5 h-3.5 text-[#D97757]" />
+                  <span className="hidden sm:inline">New File</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleOpenWorkspaceFolder}
                   className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1.5 transition cursor-pointer"
                   title="Open Workspace folder on PC in File Explorer"
@@ -1600,7 +2165,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setWorkspaceTab('workspace')
-                  fetchWorkspaceFiles()
+                  fetchWorkspaceFiles(activeWorkspaceId)
                 }}
                 className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
                   workspaceTab === 'workspace'
@@ -1616,154 +2181,101 @@ export default function App() {
             </div>
 
             {workspaceTab === 'workspace' ? (
-              <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E] p-3 overflow-y-auto">
-                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-2 pb-1.5 border-b border-white/[0.05]">
-                  <span className="truncate">Root: {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}</span>
-                  <button
-                    type="button"
-                    onClick={fetchWorkspaceFiles}
-                    className="text-xs text-[#D97757] hover:underline cursor-pointer"
-                  >
-                    Refresh
-                  </button>
+              editingWorkspaceFile ? (
+                <div className="flex-1 flex flex-col min-h-0">
+                  <CodeEditorPanel
+                    file={editingWorkspaceFile}
+                    workspaceId={activeWorkspaceId}
+                    onSave={handleSaveFileContent}
+                    onClose={() => setEditingWorkspaceFile(null)}
+                    onDelete={(path) => handleDeleteWorkspaceFile(null, path)}
+                  />
                 </div>
-                {workspaceFiles.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
-                    <Folder className="w-8 h-8 mb-2 text-slate-600" />
-                    <p className="text-xs leading-relaxed">
-                      No files in workspace yet. Attach files in chat or click "Upload" above to add context files.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    {workspaceFiles.map((wf, idx) => (
-                      <div
-                        key={idx}
-                        className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] hover:border-white/[0.1] flex items-center justify-between gap-2 transition group"
+              ) : (
+                <div className="flex-1 flex flex-col min-h-0 bg-[#0A0B0E] p-3 overflow-y-auto">
+                  <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-2 pb-1.5 border-b border-white/[0.05]">
+                    <span className="truncate">Root: {workspaceRoot ? workspaceRoot.split(/[/\\]/).slice(-2).join('/') : 'workspace/'}</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setNewFileModalOpen(true)}
+                        className="text-xs text-[#D97757] hover:underline flex items-center gap-1 cursor-pointer font-medium"
                       >
+                        <FilePlus className="w-3 h-3" />
+                        <span>+ File</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => fetchWorkspaceFiles(activeWorkspaceId)}
+                        className="text-xs text-slate-400 hover:text-white cursor-pointer"
+                      >
+                        Refresh
+                      </button>
+                    </div>
+                  </div>
+                  {workspaceFiles.length === 0 ? (
+                    <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-500">
+                      <Folder className="w-8 h-8 mb-2 text-slate-600" />
+                      <p className="text-xs leading-relaxed">
+                        No files in workspace yet. Attach files in chat, click "+ File" to create one, or click "Upload".
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {workspaceFiles.map((wf, idx) => (
                         <div
-                          onClick={() => handleViewWorkspaceFile(wf.relative_path)}
-                          className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
-                          title="Click to view file content"
+                          key={idx}
+                          className="w-full text-left px-3 py-2 rounded-lg text-xs bg-[#12151E] hover:bg-[#161B26] border border-white/[0.05] hover:border-white/[0.1] flex items-center justify-between gap-2 transition group"
                         >
-                          <ArtifactTypeBadge category={wf.category} />
-                          <div className="min-w-0">
-                            <div className="font-medium text-slate-200 truncate group-hover:text-white transition">{wf.name}</div>
-                            <div className="text-[10px] font-mono text-slate-500 truncate">{wf.relative_path}</div>
+                          <div
+                            onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                            className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer"
+                            title="Click to edit and view file"
+                          >
+                            <ArtifactTypeBadge category={wf.category} />
+                            <div className="min-w-0">
+                              <div className="font-medium text-slate-200 truncate group-hover:text-white transition">{wf.name}</div>
+                              <div className="text-[10px] font-mono text-slate-500 truncate">{wf.relative_path}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="text-[10px] font-mono text-slate-400 tabular-nums mr-1">
+                              {(wf.size_bytes / 1024).toFixed(1)} KB
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleViewWorkspaceFile(wf.relative_path)}
+                              className="p-1.5 rounded bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white transition cursor-pointer"
+                              title="Edit file in in-app code editor"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAttachWorkspaceFile(wf)}
+                              className="p-1.5 rounded bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] transition cursor-pointer"
+                              title="Attach file to chat prompt"
+                            >
+                              <Paperclip className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(e) => handleDeleteWorkspaceFile(e, wf.relative_path)}
+                              className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 transition cursor-pointer"
+                              title="Delete file permanently from disk"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="text-[10px] font-mono text-slate-400 tabular-nums mr-1">
-                            {(wf.size_bytes / 1024).toFixed(1)} KB
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => handleViewWorkspaceFile(wf.relative_path)}
-                            className="p-1.5 rounded bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 hover:text-white transition cursor-pointer"
-                            title="Preview file content"
-                          >
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleAttachWorkspaceFile(wf)}
-                            className="p-1.5 rounded bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] transition cursor-pointer"
-                            title="Attach file to chat prompt"
-                          >
-                            <Paperclip className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleDeleteWorkspaceFile(e, wf.relative_path)}
-                            className="p-1.5 rounded bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 transition cursor-pointer"
-                            title="Delete file permanently from disk"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )
             ) : (
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-              {viewingFile ? (
-                <div className="flex-1 flex flex-col min-h-0">
-                  <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-semibold text-white truncate">
-                          {viewingFile.name}
-                        </span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300">
-                          WORKSPACE FILE
-                        </span>
-                      </div>
-                      <div className="text-[11px] font-mono text-slate-400 truncate tabular-nums">
-                        {viewingFile.relative_path} ({(viewingFile.size_bytes / 1024).toFixed(1)} KB)
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleAttachWorkspaceFile({
-                            name: viewingFile.name,
-                            relative_path: viewingFile.relative_path,
-                            category: viewingFile.type,
-                            size_bytes: viewingFile.size_bytes,
-                          })
-                        }}
-                        className="h-8 px-2.5 rounded-md border border-[#D97757]/40 bg-[#D97757]/15 hover:bg-[#D97757]/25 text-[#D97757] text-xs font-medium flex items-center gap-1 transition cursor-pointer"
-                        title="Attach this file to your chat prompt"
-                      >
-                        <Paperclip className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Attach</span>
-                      </button>
-                      {viewingFile.content && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard.writeText(viewingFile.content)
-                            setCopiedCode(true)
-                            setTimeout(() => setCopiedCode(false), 2000)
-                          }}
-                          className="h-8 px-2.5 rounded-md border border-white/[0.1] bg-[#181C26] hover:bg-[#202634] text-xs text-slate-200 flex items-center gap-1 transition cursor-pointer"
-                          title="Copy file contents to clipboard"
-                        >
-                          {copiedCode ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5 text-slate-400" />
-                          )}
-                          <span className="hidden sm:inline">{copiedCode ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setViewingFile(null)}
-                        className="h-8 px-2 rounded-md border border-white/[0.08] hover:bg-white/[0.06] text-xs text-slate-400 hover:text-white transition cursor-pointer"
-                        title="Close file preview"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex-1 overflow-auto p-4 bg-[#0A0B0E]">
-                    {viewingFile.type === 'image' ? (
-                      <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#10131A] flex items-center justify-center p-2">
-                        <img src={viewingFile.url} alt={viewingFile.name} className="max-w-full rounded" />
-                      </div>
-                    ) : (
-                      <div className="rounded-lg overflow-hidden border border-white/[0.09] bg-[#080A0F] p-3 text-xs font-mono text-slate-200 overflow-x-auto whitespace-pre leading-relaxed select-text">
-                        {viewingFile.content}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ) : selectedArtifact ? (
+              {selectedArtifact ? (
                 <div className="flex-1 flex flex-col min-h-0">
                   <div className="px-4 py-2.5 bg-[#12151D] border-b border-white/[0.07] flex items-center justify-between gap-2">
                     <div className="min-w-0">
@@ -1945,243 +2457,91 @@ export default function App() {
         )}
       </div>
 
-      {/* HARDWARE SETTINGS MODAL */}
-      {hwModalOpen && hw && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-2xl rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Cpu className="w-5 h-5 text-[#D97757]" />
-                <div>
-                  <h2 className="text-sm font-semibold text-white">
-                    Hardware Auto-Tuner (Desktop & Laptop Portability)
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Adapts automatically between your RTX 4070 SUPER Desktop and Intel Core Ultra 258V Laptop
-                  </p>
-                </div>
+      {/* STUDIO SETTINGS MODAL (4 TABS: PERMISSIONS, HARDWARE, WEB/PRIVACY, PHONE LINK) */}
+      <SettingsModal
+        isOpen={settingsModalOpen}
+        onClose={() => setSettingsModalOpen(false)}
+        settings={settings}
+        hardware={hw}
+        network={network}
+        onUpdateSetting={handleUpdateSetting}
+        activeTab={settingsTab}
+        setActiveTab={setSettingsTab}
+      />
+
+      {/* WORKSPACE / PROJECT MODAL (MANAGED & EXTERNAL FOLDER) */}
+      <WorkspaceModal
+        isOpen={workspaceModalOpen}
+        onClose={() => setWorkspaceModalOpen(false)}
+        mode={workspaceModalMode}
+        workspace={editingWorkspace}
+        onSave={handleSaveWorkspace}
+        onPickFolder={handlePickFolder}
+      />
+
+      {/* NEW FILE MODAL */}
+      {newFileModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FilePlus className="w-4 h-4 text-[#D97757]" />
+                <h3 className="text-sm font-semibold text-white">New Workspace File</h3>
               </div>
               <button
-                onClick={() => setHwModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/[0.06]"
+                type="button"
+                onClick={() => {
+                  setNewFileModalOpen(false)
+                  setNewFileName('')
+                }}
+                className="p-1 rounded text-slate-400 hover:text-white"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-5 space-y-5 max-h-[80vh] overflow-y-auto">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                handleCreateNewFile(newFileName)
+              }}
+              className="space-y-3"
+            >
               <div>
-                <label className="block text-xs font-medium text-slate-300 mb-2">
-                  Hardware Profile Mode
+                <label className="block text-xs font-medium text-slate-300 mb-1">
+                  File Path / Name
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                  {[
-                    {
-                      id: 'auto',
-                      title: 'Auto-Detect (Recommended)',
-                      desc: 'Automatically configures for whichever PC/Laptop is running',
-                    },
-                    {
-                      id: 'desktop_rtx4070s',
-                      title: 'Desktop: RTX 4070 SUPER',
-                      desc: '12GB Dedicated VRAM + 64GB RAM',
-                    },
-                    {
-                      id: 'laptop_ultra_258v',
-                      title: 'Laptop: Core Ultra 258V',
-                      desc: 'Intel Arc 140V + NPU + 32GB Shared RAM',
-                    },
-                  ].map((p) => {
-                    const active =
-                      (settings?.hardware_profile_override || 'auto') === p.id
-                    return (
-                      <button
-                        key={p.id}
-                        onClick={() =>
-                          handleUpdateSetting({ hardware_profile_override: p.id })
-                        }
-                        className={`p-3 rounded-xl border text-left transition ${
-                          active
-                            ? 'border-[#D97757] bg-[#D97757]/15 text-white'
-                            : 'border-white/[0.08] bg-[#141821] text-slate-300 hover:border-white/[0.15]'
-                        }`}
-                      >
-                        <div className="text-xs font-semibold">{p.title}</div>
-                        <div className="text-[11px] text-slate-400 mt-0.5">{p.desc}</div>
-                      </button>
-                    )
-                  })}
-                </div>
+                <input
+                  type="text"
+                  value={newFileName}
+                  onChange={(e) => setNewFileName(e.target.value)}
+                  placeholder="e.g. app.py, src/index.js, README.md"
+                  className="w-full h-9 px-3 rounded-lg bg-[#0C0E14] border border-white/[0.1] text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-[#D97757]"
+                  autoFocus
+                  required
+                />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-3.5 rounded-xl bg-[#141821] border border-white/[0.07]">
-                  <div className="text-[11px] text-slate-400">Graphics / GPU</div>
-                  <div className="text-xs font-semibold text-white mt-1">
-                    {hw.gpu.name}
-                  </div>
-                  <div className="text-[11px] font-mono text-[#D97757] mt-1 tabular-nums">
-                    {hw.gpu.vram_free_gb} GB Free / {hw.gpu.vram_total_gb} GB
-                  </div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-[#141821] border border-white/[0.07]">
-                  <div className="text-[11px] text-slate-400">NPU Accelerator</div>
-                  <div className="text-xs font-semibold text-white mt-1">
-                    {hw.npu.name}
-                  </div>
-                  <div className="text-[11px] text-slate-400 mt-1">{hw.npu.role}</div>
-                </div>
-
-                <div className="p-3.5 rounded-xl bg-[#141821] border border-white/[0.07]">
-                  <div className="text-[11px] text-slate-400">Processor & System RAM</div>
-                  <div className="text-xs font-semibold text-white mt-1 truncate">
-                    {hw.cpu.name}
-                  </div>
-                  <div className="text-[11px] font-mono text-emerald-400 mt-1 tabular-nums">
-                    {hw.memory.ram_total_gb} GB Total RAM
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-[#141821] border border-white/[0.08] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div>
-                  <div className="text-xs font-semibold text-white">
-                    GPU VRAM Cache Management (Auto-Clears on New Chat & 3m Idle)
-                  </div>
-                  <div className="text-xs text-slate-400 mt-0.5">
-                    {systemStatus?.running_models?.length > 0
-                      ? `Currently in VRAM: ${systemStatus.running_models
-                          .map((m) => `${m.name} (${m.vram_gb} GB)`)
-                          .join(', ')}`
-                      : 'No AI models currently held in VRAM cache.'}
-                  </div>
-                </div>
+              <div className="flex items-center justify-end gap-2 pt-2">
                 <button
                   type="button"
-                  disabled={flushingVram}
-                  onClick={() => handleFlushVram(null)}
-                  className="h-9 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] disabled:opacity-40 text-white text-xs font-medium shrink-0 transition"
+                  onClick={() => {
+                    setNewFileModalOpen(false)
+                    setNewFileName('')
+                  }}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 hover:bg-white/[0.06]"
                 >
-                  {flushingVram ? 'Clearing VRAM...' : 'Clear GPU VRAM Now'}
+                  Cancel
                 </button>
-              </div>
-
-              {/* ZERO-VRAM GAMING MODE */}
-              <div className="p-4 rounded-xl bg-[#141821] border border-amber-500/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Gamepad2 className="w-4 h-4 text-amber-400" />
-                    <span className="text-xs font-semibold text-white">
-                      Zero-VRAM Gaming Mode
-                    </span>
-                    {settings?.gaming_mode && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/20 text-amber-300 font-mono">
-                        ACTIVE
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-slate-400 mt-1">
-                    Offloads 100% of LLM execution to your 64GB System RAM so games have full access to your GPU VRAM with zero FPS drops.
-                  </div>
-                </div>
                 <button
-                  type="button"
-                  onClick={() => handleUpdateSetting({ gaming_mode: !settings?.gaming_mode })}
-                  className={`h-9 px-3.5 rounded-lg text-xs font-medium shrink-0 transition ${
-                    settings?.gaming_mode
-                      ? 'bg-amber-500 text-black font-semibold'
-                      : 'bg-white/[0.08] hover:bg-white/[0.14] text-white border border-white/[0.1]'
-                  }`}
+                  type="submit"
+                  disabled={!newFileName.trim()}
+                  className="px-3.5 py-1.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-xs font-medium text-white transition disabled:opacity-50 cursor-pointer"
                 >
-                  {settings?.gaming_mode ? 'Disable Gaming Mode' : 'Enable Gaming Mode'}
+                  Create File
                 </button>
               </div>
-
-              {/* WEB SEARCH & BOT-SHIELDING SETTINGS */}
-              <div className="p-4 rounded-xl bg-[#141821] border border-white/[0.08] space-y-3.5">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2.5 border-b border-white/[0.06]">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs font-semibold text-white">
-                      Web Search & Bot-Shielding
-                    </span>
-                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-300 font-mono">
-                      SHIELDED
-                    </span>
-                  </div>
-                  <div className="text-[11px] font-mono text-emerald-400/90">
-                    Zero Residential IP Exposure
-                  </div>
-                </div>
-
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  When Web Search is enabled, articles are fetched through Jina Reader cloud proxies (<code className="text-slate-400">r.jina.ai</code>). 
-                  Your residential home IP address is completely shielded from target websites, Cloudflare, and Akamai bot-detection systems.
-                </p>
-
-                <div className="pt-1 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <label className="text-xs font-medium text-slate-200 flex items-center gap-1.5">
-                      <Key className="w-3.5 h-3.5 text-[#D97757]" />
-                      <span>Brave Search API Key (Optional — 2,000 free queries/mo)</span>
-                    </label>
-                    <a
-                      href="https://brave.com/search/api/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[11px] text-[#D97757] hover:underline flex items-center gap-1"
-                    >
-                      <span>Get free API key</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-
-                  <div className="flex gap-2">
-                    <div className="relative flex-1">
-                      <input
-                        type={showBraveKey ? 'text' : 'password'}
-                        value={braveApiKeyInput}
-                        onChange={(e) => setBraveApiKeyInput(e.target.value)}
-                        placeholder="Paste Brave API key (e.g. BSA...)"
-                        className="w-full h-9 pl-3 pr-9 rounded-lg bg-[#0D0F14] border border-white/[0.1] text-xs font-mono text-white focus:outline-none focus:border-[#D97757]/60"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowBraveKey((v) => !v)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
-                        title={showBraveKey ? 'Hide Key' : 'Show Key'}
-                      >
-                        {showBraveKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={handleSaveBraveKey}
-                      className="h-9 px-3.5 rounded-lg bg-[#D97757] hover:bg-[#E4886A] text-white text-xs font-medium shrink-0 transition"
-                    >
-                      {braveKeySaved ? 'Saved!' : 'Save Key'}
-                    </button>
-                  </div>
-
-                  <div className="text-[11px] text-slate-400">
-                    {settings?.brave_search_api_key
-                      ? '✓ Official Brave Search API is configured and active with automatic DuckDuckGo fallback.'
-                      : 'Out-of-the-box mode active (DuckDuckGo + Jina Reader proxy, no API key needed).'}
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 rounded-xl bg-[#0D0F14] border border-white/[0.08] space-y-2">
-                <div className="text-xs font-semibold text-white">
-                  How the App Is Tuned for This Machine
-                </div>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {hw.tuning.explanation}
-                </p>
-              </div>
-            </div>
+            </form>
           </div>
         </div>
       )}
@@ -2595,45 +2955,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MOBILE PHONE WI-FI ACCESS MODAL */}
-      {mobileModalOpen && network && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-2xl bg-[#10131A] border border-white/[0.1] shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-white/[0.08] flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Smartphone className="w-4 h-4 text-[#D97757]" />
-                <h2 className="text-sm font-semibold text-white">
-                  Use on Your Phone (Home Wi-Fi)
-                </h2>
-              </div>
-              <button
-                onClick={() => setMobileModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            <div className="p-6 text-center space-y-4">
-              <p className="text-xs text-slate-300 leading-relaxed">
-                Make sure your phone is connected to your home Wi-Fi, then scan this QR
-                code with your phone camera (or type the address below into Safari/Chrome):
-              </p>
-              {network.qr_code && (
-                <div className="inline-block p-3 rounded-xl bg-[#111317] border border-white/[0.1]">
-                  <img
-                    src={network.qr_code}
-                    alt="LAN QR Code"
-                    className="w-44 h-44 mx-auto"
-                  />
-                </div>
-              )}
-              <div className="p-3 rounded-lg bg-[#0B0D12] border border-white/[0.08] font-mono text-sm text-[#D97757] select-all tabular-nums">
-                {network.lan_url}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* SHUTDOWN / POWER OFF CONFIRMATION MODAL */}
       {shutdownModalOpen && (
@@ -2673,7 +2994,16 @@ export default function App() {
   )
 }
 
-function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
+function MessageRow({
+  msg,
+  msgIndex,
+  onSelectArtifact,
+  onDeleteArtifact,
+  onEditUserPrompt,
+  onRegenerate,
+  onRevertBackup,
+  revertingBackup,
+}) {
   const [thinkOpen, setThinkOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const isUser = msg.role === 'user'
@@ -2697,6 +3027,30 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
           >
             {isUser ? 'You' : `Model: ${msg.model || 'Local AI'}`}
           </span>
+
+          {isUser && onEditUserPrompt && (
+            <button
+              type="button"
+              onClick={() => onEditUserPrompt(msg)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono text-slate-400 hover:text-white hover:bg-white/[0.08] border border-transparent hover:border-white/[0.1] transition cursor-pointer"
+              title="Edit prompt and branch conversation"
+            >
+              <Edit3 className="w-3 h-3 text-slate-400" />
+              <span>Edit</span>
+            </button>
+          )}
+
+          {!isUser && onRegenerate && (
+            <button
+              type="button"
+              onClick={onRegenerate}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono text-slate-400 hover:text-white hover:bg-white/[0.08] border border-transparent hover:border-white/[0.1] transition cursor-pointer"
+              title="Regenerate this response"
+            >
+              <RotateCcw className="w-3 h-3 text-slate-400" />
+              <span>Regenerate</span>
+            </button>
+          )}
         </div>
         {!isUser && msg.tokens_per_sec > 0 && (
           <span className="text-[11px] font-mono text-slate-400 tabular-nums">
@@ -2785,11 +3139,40 @@ function MessageRow({ msg, onSelectArtifact, onDeleteArtifact }) {
                 </div>
               )}
 
-              {/* Backup notification pill */}
-              {tc.backup_created && (
-                <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center gap-1.5 text-[11px] text-emerald-400">
-                  <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-                  <span>Safe Backup created: <code className="text-slate-300 font-mono">{tc.backup_created.split(/[/\\]/).pop()}</code></span>
+              {/* Diff Viewer for file modifications */}
+              {tc.diff && (
+                <div className="mt-2 pt-2 border-t border-white/[0.06]">
+                  <DiffViewer
+                    diff={tc.diff}
+                    filepath={tc.arguments?.path || tc.filepath}
+                    backupPath={tc.backup_path || tc.backup_created}
+                    onRevert={onRevertBackup}
+                    isReverting={revertingBackup === (tc.backup_path || tc.backup_created)}
+                  />
+                </div>
+              )}
+
+              {/* Backup notification pill when no diff is displayed */}
+              {tc.backup_created && !tc.diff && (
+                <div className="mt-2 pt-2 border-t border-white/[0.06] flex items-center justify-between gap-2 text-[11px] text-emerald-400">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">
+                      Safe Backup created: <code className="text-slate-300 font-mono">{tc.backup_created.split(/[/\\]/).pop()}</code>
+                    </span>
+                  </div>
+                  {onRevertBackup && (
+                    <button
+                      type="button"
+                      disabled={revertingBackup === tc.backup_created}
+                      onClick={() => onRevertBackup(tc.backup_created)}
+                      className="px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/35 text-amber-300 text-[10px] font-mono flex items-center gap-1 shrink-0 transition cursor-pointer"
+                      title="Restore previous file version from safe backup"
+                    >
+                      <RotateCcw className="w-3 h-3 text-amber-400" />
+                      <span>Revert</span>
+                    </button>
+                  )}
                 </div>
               )}
 
